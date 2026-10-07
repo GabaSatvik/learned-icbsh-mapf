@@ -1,0 +1,3 @@
+BOTH_APPLICABLE
+Regime A max cell rate: 1.0000
+Regime B max cell rate: 1.0000

@@ -1,0 +1,52 @@
+{
+  "regime": "B",
+  "mean_xgb_spearman": 0.8657898631696664,
+  "mean_linear_spearman": 0.744569993959377,
+  "mean_random_spearman": 0.021841489718993756,
+  "feature_importances": {
+    "corridor_score_i": 0.14816497266292572,
+    "corridor_score_j": 0.0,
+    "local_density_i": 0.035985056310892105,
+    "local_density_j": 0.0,
+    "pair_conflict_count": 0.0300463754683733,
+    "goal_dist_i": 0.044358011335134506,
+    "goal_dist_j": 0.052743636071681976,
+    "num_agents_in_conflict_graph": 0.038033198565244675,
+    "cardinal_degree_i": 0.029082195833325386,
+    "cardinal_degree_j": 0.013258848339319229,
+    "downstream_conflict_count_i": 0.04723728448152542,
+    "downstream_conflict_count_j": 0.05821925774216652,
+    "conflict_type": 0.3508356511592865,
+    "mvc_size": 0.01373553741723299,
+    "conflict_time": 0.030795807018876076,
+    "is_edge_conflict": 0.03327122703194618,
+    "agent_i_path_length": 0.04185880720615387,
+    "agent_j_path_length": 0.03237409517168999
+  },
+  "ablations": {
+    "corridor": {
+      "held_out_spearman": 0.7958734004329523,
+      "delta_vs_full": -0.06991646273671415
+    },
+    "congestion": {
+      "held_out_spearman": 0.87159252717707,
+      "delta_vs_full": 0.005802664007403591
+    },
+    "conflict_frequency": {
+      "held_out_spearman": 0.8753603289745268,
+      "delta_vs_full": 0.009570465804860318
+    },
+    "goal_distance": {
+      "held_out_spearman": 0.8679130002433126,
+      "delta_vs_full": 0.0021231370736461974
+    },
+    "affected_agents": {
+      "held_out_spearman": 0.8689266526491946,
+      "delta_vs_full": 0.0031367894795281126
+    },
+    "downstream": {
+      "held_out_spearman": 0.8664905816405117,
+      "delta_vs_full": 0.0007007184708452963
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# Python virtual environment & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Large archives and downloaded scenario zips
+data/*.zip
+*.zip
+
+# Intermediate raw training logs
+logs/*.json
+
+# Operating System files
+.DS_Store
+Thumbs.db

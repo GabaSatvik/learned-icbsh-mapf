@@ -1,0 +1,7 @@
+Handbuilt optimality passed: True
+Benchmark average ICBS-h CPU seconds: 4.4844
+Status: full scale affordable
+max_queries_per_instance: 100
+drop_paris_from_training: False
+training_scenarios_count: 5
+status: full scale affordable

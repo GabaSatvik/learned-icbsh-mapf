@@ -1,0 +1,5 @@
+Verdict: GATE_FAILED
+Report Type: CASE_INCONCLUSIVE
+Optimality: True
+Proxy Validity: False (valid maps: 0)
+Directional Consistency: False (3/6 cells negative)
