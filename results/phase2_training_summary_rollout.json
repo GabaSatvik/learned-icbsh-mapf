@@ -1,0 +1,58 @@
+{
+  "data_source": "rollout_training_regimeB.csv",
+  "b_rollout": 1500,
+  "t_rollout": 2.0,
+  "total_rows": 583,
+  "usable_queries": 79,
+  "dropped_tied_queries": 3,
+  "mean_xgb_spearman": 0.12243715548150491,
+  "mean_lin_spearman": 0.1295121165841117,
+  "mean_rnd_spearman": -0.1013201232777797,
+  "xgb_lift_over_random": 0.2237572787592846,
+  "feature_importances": {
+    "corridor_score_i": 0.05999550223350525,
+    "corridor_score_j": 0.0,
+    "local_density_i": 0.0659562200307846,
+    "local_density_j": 0.0,
+    "pair_conflict_count": 0.07282809168100357,
+    "goal_dist_i": 0.059152036905288696,
+    "goal_dist_j": 0.0639943927526474,
+    "num_agents_in_conflict_graph": 0.05983040854334831,
+    "cardinal_degree_i": 0.0514066256582737,
+    "cardinal_degree_j": 0.07082691788673401,
+    "downstream_conflict_count_i": 0.054473258554935455,
+    "downstream_conflict_count_j": 0.08760620653629303,
+    "conflict_type": 0.03150174021720886,
+    "mvc_size": 0.05759027227759361,
+    "conflict_time": 0.07316459715366364,
+    "is_edge_conflict": 0.05703999847173691,
+    "agent_i_path_length": 0.06547434628009796,
+    "agent_j_path_length": 0.0691593587398529
+  },
+  "ablations": {
+    "corridor": {
+      "spearman": 0.10946140345118835,
+      "delta": -0.012975752030316562
+    },
+    "congestion": {
+      "spearman": 0.17698801633217756,
+      "delta": 0.05455086085067265
+    },
+    "conflict_frequency": {
+      "spearman": 0.08584678947879205,
+      "delta": -0.03659036600271286
+    },
+    "goal_distance": {
+      "spearman": 0.14479731380215038,
+      "delta": 0.022360158320645473
+    },
+    "affected_agents": {
+      "spearman": 0.10969943486069604,
+      "delta": -0.01273772062080887
+    },
+    "downstream": {
+      "spearman": 0.11549633484501938,
+      "delta": -0.006940820636485531
+    }
+  }
+}

@@ -8,10 +8,14 @@ venv/
 # Large archives and downloaded scenario zips
 data/*.zip
 *.zip
+data/rollout_checkpoints/
+data/proxy_training_regimeB.csv
 
 # Intermediate raw training logs
-logs/*.json
+logs/
+*.log
 
 # Operating System files
 .DS_Store
 Thumbs.db
+
