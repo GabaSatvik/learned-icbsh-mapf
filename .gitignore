@@ -5,12 +5,17 @@ __pycache__/
 venv/
 .env
 
-# Large archives and downloaded scenario zips
+# Large archives and downloaded scenario files
 data/*.zip
 *.zip
+data/*.scen
+data/scen-even/
+data/scen-random/
+data/rollout_checkpoints/
 
 # Intermediate raw training logs
-logs/*.json
+logs/
+*.log
 
 # Operating System files
 .DS_Store

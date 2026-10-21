@@ -1,0 +1,76 @@
+{
+  "n_rows": 6307,
+  "n_queries": 1356,
+  "n_features": 24,
+  "cv_xgb_folds": [
+    0.7576476965912685,
+    0.6539968201858011,
+    0.7492390634431548,
+    0.7072552277610329,
+    0.7716325560321499
+  ],
+  "cv_xgb_mean": 0.7279542728026814,
+  "cv_linear_mean": 0.660495307561711,
+  "cv_random_mean": 0.004115596551264815,
+  "cross_map_transfer": {
+    "train_random-32-32-20_test_other": 0.6401124902332678,
+    "train_room-32-32-4_test_other": 0.6390465460634244
+  },
+  "feature_importances": {
+    "conflict_type": 0.18703265488147736,
+    "delta_g_max": 0.11543908715248108,
+    "delta_g_j": 0.09639976918697357,
+    "is_edge_conflict": 0.05827799439430237,
+    "mvc_vertex_cover_membership": 0.05744387209415436,
+    "delta_g_i": 0.05229815095663071,
+    "delta_g_min": 0.050193458795547485,
+    "downstream_conflict_count_i": 0.04010026529431343,
+    "downstream_conflict_count_j": 0.03932202234864235,
+    "num_agents_in_conflict_graph": 0.03562223166227341,
+    "pair_conflict_count": 0.03471493721008301,
+    "goal_dist_j": 0.03378615900874138,
+    "mvc_size": 0.028907859697937965,
+    "conflict_time": 0.027698775753378868,
+    "agent_i_path_length": 0.027076946571469307,
+    "delta_f_res": 0.0252015870064497,
+    "goal_dist_i": 0.025181768462061882,
+    "corridor_score_i": 0.01823890581727028,
+    "local_density_i": 0.017400817945599556,
+    "marginal_conflict_delta_min": 0.012487531639635563,
+    "cardinal_degree_i": 0.01034394558519125,
+    "cardinal_degree_j": 0.006831240840256214,
+    "corridor_score_j": 0.0,
+    "local_density_j": 0.0
+  },
+  "ablations": {
+    "full_model": 0.7279542728026814,
+    "no_corridor": {
+      "spearman": 0.7253116519698857,
+      "delta": -0.002642620832795761
+    },
+    "no_congestion": {
+      "spearman": 0.7332438162048259,
+      "delta": 0.005289543402144492
+    },
+    "no_conflict_frequency": {
+      "spearman": 0.7250210454647409,
+      "delta": -0.002933227337940547
+    },
+    "no_goal_distance": {
+      "spearman": 0.7121085469962021,
+      "delta": -0.01584572580647936
+    },
+    "no_affected_agents": {
+      "spearman": 0.7120986955128098,
+      "delta": -0.015855577289871636
+    },
+    "no_downstream": {
+      "spearman": 0.7118373829849125,
+      "delta": -0.01611688981776893
+    },
+    "no_cached_lookahead": {
+      "spearman": 0.688240023626975,
+      "delta": -0.03971424917570643
+    }
+  }
+}
