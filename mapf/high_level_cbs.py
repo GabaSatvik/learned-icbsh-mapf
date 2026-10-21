@@ -1,65 +1,81 @@
 """
 Standard Conflict-Based Search (Sharon et al., 2012).
-Implements PlainCBS solver with standard dict return format.
+Uses exact 2D Reverse-BFS heuristics in low-level Space-Time A* and branches on first-found conflict.
 """
+
 import heapq
 import time
-from typing import List, Tuple, Set, Optional, Dict, Any
 from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Any
+from mapf.grid import GridMap
+from mapf.low_level import (
+    ConstraintSet,
+    space_time_astar,
+    get_path_cost,
+    compute_bfs_h_table,
+)
+from mapf.conflicts import Conflict, detect_first_conflict
+from mapf.cardinal import build_constraint_for_agent
 
-from mapf.grid import Grid
-from mapf.low_level import space_time_astar, compute_bfs_h_table, get_path_cost, SpaceTimeAStar
-from mapf.conflicts import Conflict, find_first_conflict
+
+@dataclass(order=True)
+class CBSNode:
+    cost: int
+    node_id: int
+    paths: List[List[Tuple[int, int]]] = field(compare=False)
+    constraints: List[ConstraintSet] = field(compare=False)
 
 
 class PlainCBS:
-    """
-    Standard Plain CBS solver (Sharon et al., 2012).
-    Branches on the first detected conflict without heuristics.
-    """
-    def __init__(self, grid: Grid):
+    def __init__(self, grid: GridMap):
         self.grid = grid
 
     def solve(
         self,
         starts: List[Tuple[int, int]],
         goals: List[Tuple[int, int]],
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         max_expansions: Optional[int] = None,
+        shared_h_tables: Optional[List[Dict[Tuple[int, int], int]]] = None,
+        shared_path_cache: Optional[Dict[Tuple[int, Tuple[frozenset, frozenset]], Optional[List[Tuple[int, int]]]]] = None,
     ) -> Dict[str, Any]:
         start_time = time.perf_counter()
         k = len(starts)
-        max_t = self.grid.width + self.grid.height + 50
 
-        # Compute static heuristic tables for all agents
-        h_tables = [compute_bfs_h_table(self.grid, goals[i]) for i in range(k)]
-        if any(starts[i] not in h_tables[i] for i in range(k)):
-            return {
-                "status": "UNSOLVABLE",
-                "cost": None,
-                "nodes_expanded": 0,
-                "paths": None,
-                "decision_nodes": 0,
-            }
-
-        # Root paths
-        root_paths = []
+        h_tables = shared_h_tables if shared_h_tables is not None else [compute_bfs_h_table(self.grid, goals[i]) for i in range(k)]
         for i in range(k):
-            p = space_time_astar(self.grid, starts[i], goals[i], [], max_t, h_tables[i])
-            if p is None:
+            if starts[i] not in h_tables[i]:
                 return {
-                    "status": "UNSOLVABLE",
+                    "status": "NO_ROOT_PATH",
                     "cost": None,
                     "nodes_expanded": 0,
-                    "paths": None,
-                    "decision_nodes": 0,
+                    "runtime": time.perf_counter() - start_time,
                 }
+
+        max_base_dist = max(h_tables[i][starts[i]] for i in range(k)) if k > 0 else 0
+        max_t = max(max_base_dist + 80, self.grid.width + self.grid.height + 50)
+
+        path_cache = shared_path_cache if shared_path_cache is not None else {}
+        root_constraints = [ConstraintSet() for _ in range(k)]
+        root_paths = []
+
+        for i in range(k):
+            p = space_time_astar(
+                self.grid, starts[i], goals[i], root_constraints[i], max_timesteps=max_t, h_table=h_tables[i]
+            )
+            if p is None:
+                return {
+                    "status": "NO_ROOT_PATH",
+                    "cost": None,
+                    "nodes_expanded": 0,
+                    "runtime": time.perf_counter() - start_time,
+                }
+            path_cache[(i, root_constraints[i].freeze_key())] = p
             root_paths.append(p)
 
         root_cost = sum(get_path_cost(p) for p in root_paths)
-        # Heap items: (cost, node_id, paths, constraints)
-        node_id = 0
-        open_list = [(root_cost, node_id, root_paths, [])]
+        node_counter = 0
+        open_list = [CBSNode(cost=root_cost, node_id=node_counter, paths=root_paths, constraints=root_constraints)]
         nodes_expanded = 0
 
         while open_list:
@@ -68,70 +84,65 @@ class PlainCBS:
                     "status": "TIMEOUT",
                     "cost": None,
                     "nodes_expanded": nodes_expanded,
-                    "paths": None,
-                    "decision_nodes": 0,
+                    "runtime": time.perf_counter() - start_time,
                 }
-
             if max_expansions is not None and nodes_expanded >= max_expansions:
                 return {
-                    "status": "TIMEOUT",
+                    "status": "MAX_EXPANSIONS",
                     "cost": None,
                     "nodes_expanded": nodes_expanded,
-                    "paths": None,
-                    "decision_nodes": 0,
+                    "runtime": time.perf_counter() - start_time,
                 }
 
-            cost, _, curr_paths, curr_cons = heapq.heappop(open_list)
+            curr = heapq.heappop(open_list)
             nodes_expanded += 1
 
-            conflict = find_first_conflict(curr_paths)
+            conflict = detect_first_conflict(curr.paths)
             if conflict is None:
                 return {
                     "status": "SOLVED",
-                    "cost": cost,
+                    "cost": curr.cost,
+                    "paths": curr.paths,
                     "nodes_expanded": nodes_expanded,
-                    "paths": curr_paths,
-                    "decision_nodes": 0,
+                    "runtime": time.perf_counter() - start_time,
                 }
 
-            # Branch on first conflict
-            for agent in (conflict.agent_1, conflict.agent_2):
-                other = conflict.agent_2 if agent == conflict.agent_1 else conflict.agent_1
-                new_c = conflict.get_constraint_for_agent(agent, other)
-                child_cons = curr_cons + [new_c]
-
-                agent_cons = [c for c in child_cons if getattr(c, "agent", -1) == agent]
-                new_p = space_time_astar(
-                    self.grid, starts[agent], goals[agent], agent_cons, max_t, h_tables[agent]
-                )
-
-                if new_p is not None:
-                    child_paths = list(curr_paths)
-                    child_paths[agent] = new_p
+            for agent_id in (conflict.agent_i, conflict.agent_j):
+                new_cs = build_constraint_for_agent(conflict, agent_id, curr.constraints[agent_id])
+                ckey = (agent_id, new_cs.freeze_key())
+                if ckey not in path_cache:
+                    path_cache[ckey] = space_time_astar(
+                        self.grid,
+                        starts[agent_id],
+                        goals[agent_id],
+                        new_cs,
+                        max_timesteps=max_t,
+                        h_table=h_tables[agent_id],
+                    )
+                new_path = path_cache[ckey]
+                if new_path is not None:
+                    child_paths = list(curr.paths)
+                    child_paths[agent_id] = new_path
+                    child_constraints = list(curr.constraints)
+                    child_constraints[agent_id] = new_cs
                     child_cost = sum(get_path_cost(p) for p in child_paths)
-                    node_id += 1
-                    heapq.heappush(open_list, (child_cost, node_id, child_paths, child_cons))
+                    node_counter += 1
+                    heapq.heappush(
+                        open_list,
+                        CBSNode(
+                            cost=child_cost,
+                            node_id=node_counter,
+                            paths=child_paths,
+                            constraints=child_constraints,
+                        ),
+                    )
 
         return {
             "status": "UNSOLVABLE",
             "cost": None,
             "nodes_expanded": nodes_expanded,
-            "paths": None,
-            "decision_nodes": 0,
+            "runtime": time.perf_counter() - start_time,
         }
 
 
-class StandardCBS:
-    """Legacy wrapper for StandardCBS."""
-    def __init__(self, grid: Grid):
-        self._cbs = PlainCBS(grid)
-
-    def solve(self, starts, goals, time_limit: float = 30.0):
-        res = self._cbs.solve(starts, goals, timeout=time_limit)
-        stats = {
-            "expanded": res["nodes_expanded"],
-            "time": 0.0,
-            "cost": res["cost"],
-            "timeout": (res["status"] == "TIMEOUT"),
-        }
-        return res["paths"], stats
+StandardCBS = PlainCBS

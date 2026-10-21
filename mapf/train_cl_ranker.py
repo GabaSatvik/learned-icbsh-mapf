@@ -11,12 +11,14 @@ import pickle
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
-from sklearn.model_selection import GroupKFold
-from sklearn.linear_model import Ridge
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from xgboost import XGBRanker
-
+try:
+    from sklearn.model_selection import GroupKFold
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import make_pipeline
+    from xgboost import XGBRanker
+except ImportError:
+    from mapf.baselines import GroupKFold, Ridge, StandardScaler, make_pipeline, XGBRanker
 from mapf.features import FEATURE_NAMES
 
 
@@ -47,16 +49,28 @@ FEATURE_FAMILIES = {
 
 
 def compute_mean_query_spearman(df_test: pd.DataFrame, preds: np.ndarray) -> float:
-    df_eval = df_test.copy()
-    df_eval["pred"] = preds
+    from scipy.stats import rankdata
+    qids = df_test["query_id"].values
+    y_all = df_test["oracle_score"].values
+    p_all = np.asarray(preds, dtype=np.float64)
+    _, idx_start, counts = np.unique(qids, return_index=True, return_counts=True)
+    order = np.argsort(idx_start)
+    idx_start = idx_start[order]
+    counts = counts[order]
     corrs = []
-    for _, grp in df_eval.groupby("query_id"):
-        y_true = grp["oracle_score"].values
-        y_pred = grp["pred"].values
-        if len(y_true) >= 2 and np.std(y_true) > 1e-7 and np.std(y_pred) > 1e-7:
-            rho, _ = spearmanr(y_true, y_pred)
-            if not np.isnan(rho):
-                corrs.append(float(rho))
+    for st, cnt in zip(idx_start, counts):
+        if cnt < 2:
+            continue
+        yt = y_all[st : st + cnt]
+        yp = p_all[st : st + cnt]
+        if np.std(yt) > 1e-7 and np.std(yp) > 1e-7:
+            rt = rankdata(yt)
+            rp = rankdata(yp)
+            rt_c = rt - np.mean(rt)
+            rp_c = rp - np.mean(rp)
+            denom = np.sqrt(np.sum(rt_c ** 2) * np.sum(rp_c ** 2))
+            if denom > 1e-9:
+                corrs.append(float(np.sum(rt_c * rp_c) / denom))
     return float(np.mean(corrs)) if corrs else 0.0
 
 
@@ -82,7 +96,6 @@ def train_and_evaluate(
     summary_out: str = "results/phase3_training_summary.json",
 ):
     df = pd.read_csv(csv_path)
-    # Filter to valid feature columns present in both FEATURE_NAMES and df
     feature_cols = [c for c in FEATURE_NAMES if c in df.columns]
     print(f"[Train CL-Ranker] Loaded {len(df)} rows ({df['query_id'].nunique()} queries) with {len(feature_cols)} features.")
 

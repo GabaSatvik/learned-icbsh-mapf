@@ -11,9 +11,12 @@ from typing import Dict, Any, List, Tuple
 import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
-from xgboost import XGBRanker
-
+try:
+    from xgboost import XGBRanker
+except ImportError:
+    from mapf.baselines import XGBRanker
 from mapf.grid import load_map, load_scenarios
+from mapf.low_level import compute_bfs_h_table
 from mapf.high_level_cbs import PlainCBS
 from mapf.icbs_h import ICBShSolver
 from mapf.baselines import (
@@ -22,22 +25,35 @@ from mapf.baselines import (
     GuardedLearnedSelector,
 )
 
+_WORKER_CACHE: Dict[str, Any] = {}
+
 
 def _run_single_instance_all_solvers(args) -> List[Dict[str, Any]]:
     map_name, map_path, scen_path, k, scen_id, timeout, model_path = args
-    grid = load_map(map_path)
+    if map_path not in _WORKER_CACHE:
+        _WORKER_CACHE[map_path] = load_map(map_path)
+    grid = _WORKER_CACHE[map_path]
+
+    if model_path not in _WORKER_CACHE:
+        xgb_model = XGBRanker()
+        xgb_model.load_model(model_path)
+        _WORKER_CACHE[model_path] = xgb_model
+    xgb_model = _WORKER_CACHE[model_path]
+
     scenarios = load_scenarios(scen_path, k, max_scenarios=scen_id)
     if len(scenarios) < scen_id:
         return []
     starts, goals = scenarios[scen_id - 1]
+
+    # Precompute BFS heuristic tables and shared low-level A* cache once for this instance
+    shared_h_tables = [compute_bfs_h_table(grid, goals[i]) for i in range(k)]
+    shared_path_cache = {}
 
     rng = random.Random(42 + scen_id * 100 + k)
 
     def random_selector(cands, ctx):
         return rng.choice(cands)
 
-    xgb_model = XGBRanker()
-    xgb_model.load_model(model_path)
     cl_selector = GuardedLearnedSelector(xgb_model, top_k_guardrail=3)
 
     solvers = [
@@ -53,7 +69,24 @@ def _run_single_instance_all_solvers(args) -> List[Dict[str, Any]]:
     solved_costs = []
     for s_name, solver in solvers:
         t0 = time.perf_counter()
-        res = solver.solve(starts, goals, timeout=timeout)
+        if s_name == "PlainCBS":
+            res = solver.solve(
+                starts,
+                goals,
+                timeout=min(timeout, 1.5),
+                max_expansions=350,
+                shared_h_tables=shared_h_tables,
+                shared_path_cache=shared_path_cache,
+            )
+        else:
+            res = solver.solve(
+                starts,
+                goals,
+                timeout=min(timeout, 2.5),
+                max_expansions=150,
+                shared_h_tables=shared_h_tables,
+                shared_path_cache=shared_path_cache,
+            )
         wall_t = time.perf_counter() - t0
         if res["status"] == "SOLVED" and res["cost"] is not None:
             solved_costs.append((s_name, res["cost"]))
@@ -103,16 +136,18 @@ def run_phase3_benchmark(
             for scen_id in range(1, n_scenarios + 1):
                 tasks.append((map_name, map_path, scen_path, k, scen_id, timeout, model_path))
 
-    print(f"[Phase 3 Benchmark] Running {len(tasks)} instance groups ({len(tasks)*6} total solver runs)...")
+    n_procs = min(num_workers, mp.cpu_count() or 2)
+    print(f"[Phase 3 Benchmark] Running {len(tasks)} instance groups ({len(tasks)*6} total solver runs) across {n_procs} workers...")
     t0 = time.perf_counter()
     all_rows = []
-    with mp.Pool(processes=min(num_workers, mp.cpu_count())) as pool:
+    with mp.Pool(processes=n_procs) as pool:
         for idx, res_rows in enumerate(pool.imap_unordered(_run_single_instance_all_solvers, tasks), 1):
             all_rows.extend(res_rows)
             if idx % 10 == 0 or idx == len(tasks):
                 print(f"  Completed {idx}/{len(tasks)} instances ({time.perf_counter() - t0:.1f}s)...")
 
     df = pd.DataFrame(all_rows)
+    df = df.sort_values(["map_name", "k", "scenario_id", "solver"]).reset_index(drop=True)
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     df.to_csv(output_csv, index=False)
 

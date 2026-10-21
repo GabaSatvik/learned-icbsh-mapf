@@ -1,97 +1,121 @@
 """
-Low-level space-time A* pathfinding for individual agents with dynamic constraints.
+Low-level Space-Time A* planner for single-agent pathfinding under constraints.
+Includes exact Reverse-BFS 2D heuristic precomputation to eliminate local minima
+on complex maps (e.g., Paris_1_256, room-32-32-4).
 """
+
 import heapq
-from typing import List, Tuple, Set, Dict, Optional, Any, Union
-from mapf.grid import Grid
+from collections import deque
+from typing import List, Tuple, Set, Optional, Dict, Union, Iterable
+from mapf.grid import GridMap
+from mapf.conflicts import Constraint
 
 
-def manhattan_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
-    return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
+class ConstraintSet:
+    def __init__(
+        self,
+        vertex_constraints: Optional[Set[Tuple[int, int, int]]] = None,
+        edge_constraints: Optional[Set[Tuple[int, int, int, int, int]]] = None,
+    ):
+        self.vertex_constraints: Set[Tuple[int, int, int]] = (
+            set(vertex_constraints) if vertex_constraints else set()
+        )
+        self.edge_constraints: Set[Tuple[int, int, int, int, int]] = (
+            set(edge_constraints) if edge_constraints else set()
+        )
+
+    def add_vertex_constraint(self, r: int, c: int, t: int):
+        self.vertex_constraints.add((r, c, t))
+
+    def add_edge_constraint(self, r1: int, c1: int, r2: int, c2: int, t: int):
+        self.edge_constraints.add((r1, c1, r2, c2, t))
+
+    def add_constraint(self, con: Constraint):
+        if con.conflict_type.upper() == "VERTEX":
+            self.vertex_constraints.add((con.loc1[0], con.loc1[1], con.time))
+        else:
+            loc2 = con.loc2 if con.loc2 is not None else con.loc1
+            self.edge_constraints.add((con.loc1[0], con.loc1[1], loc2[0], loc2[1], con.time))
+
+    def copy(self) -> "ConstraintSet":
+        return ConstraintSet(self.vertex_constraints, self.edge_constraints)
+
+    def freeze_key(self) -> Tuple[frozenset, frozenset]:
+        """Hashable key for memoizing low-level A* queries."""
+        return (frozenset(self.vertex_constraints), frozenset(self.edge_constraints))
 
 
-def compute_bfs_h_table(grid: Grid, goal: Tuple[int, int]) -> Dict[Tuple[int, int], int]:
-    """
-    Reverse BFS from goal to compute exact shortest distance to goal ignoring dynamic obstacles.
-    """
-    dist: Dict[Tuple[int, int], int] = {goal: 0}
-    queue = [goal]
-    head = 0
-    while head < len(queue):
-        curr = queue[head]
-        head += 1
-        d = dist[curr]
-        for nxt in grid.get_neighbors(curr[0], curr[1]):
-            if nxt not in dist:
-                dist[nxt] = d + 1
-                queue.append(nxt)
-    return dist
-
-
-compute_heuristic_map = compute_bfs_h_table
-
-
-def get_path_cost(path: Optional[List[Tuple[int, int]]]) -> int:
-    return len(path) - 1 if path else 0
-
-
-def _parse_constraints(constraints: Any) -> Tuple[Set[Tuple[int, int, int]], Set[Tuple[int, int, int, int, int]]]:
-    """
-    Parses various constraint formats into:
-      vertex_constraints: Set[(x, y, t)]
-      edge_constraints: Set[(from_x, from_y, to_x, to_y, t)]
-    """
-    v_cons = set()
-    e_cons = set()
-    if not constraints:
-        return v_cons, e_cons
-
-    for c in constraints:
-        if hasattr(c, "constraint_type"):
-            # Constraint object
-            ctype = str(c.constraint_type).lower()
-            if ctype in ("vertex", "v"):
-                loc = c.loc_1 if hasattr(c, "loc_1") else c.loc
-                v_cons.add((loc[0], loc[1], c.time))
-            else:
-                l1 = c.loc_1 if hasattr(c, "loc_1") else c.loc[0]
-                l2 = c.loc_2 if hasattr(c, "loc_2") else c.loc[1]
-                e_cons.add((l1[0], l1[1], l2[0], l2[1], c.time))
-        elif isinstance(c, tuple):
-            if len(c) == 3 and isinstance(c[1], str):
-                # (agent_id, type_str, data)
-                _, ctype, data = c
-                if str(ctype).lower() == "vertex":
-                    v_cons.add(data)
+def coerce_constraint_set(
+    constraints: Optional[Union[ConstraintSet, Iterable[Constraint]]],
+    agent_id: Optional[int] = None,
+) -> ConstraintSet:
+    if constraints is None:
+        return ConstraintSet()
+    if isinstance(constraints, ConstraintSet):
+        return constraints
+    cs = ConstraintSet()
+    for item in constraints:
+        if isinstance(item, Constraint):
+            if agent_id is None or item.agent == agent_id:
+                cs.add_constraint(item)
+        elif isinstance(item, tuple) and len(item) == 3 and isinstance(item[2], tuple):
+            # Legacy (agent_id, 'vertex'/'edge', data)
+            ag, ctype, data = item
+            if agent_id is None or ag == agent_id:
+                if ctype == "vertex":
+                    cs.add_vertex_constraint(data[0], data[1], data[2])
                 else:
-                    e_cons.add(data)
-            elif len(c) == 3:
-                # (x, y, t)
-                v_cons.add(c)
-            elif len(c) == 5:
-                # (fx, fy, tx, ty, t)
-                e_cons.add(c)
-    return v_cons, e_cons
+                    cs.add_edge_constraint(data[0], data[1], data[2], data[3], data[4])
+    return cs
+
+
+def compute_bfs_h_table(grid: GridMap, goal: Tuple[int, int]) -> Dict[Tuple[int, int], int]:
+    """
+    Computes exact 2D shortest-path distances from every reachable passable cell
+    to `goal` via Reverse BFS. Completely eliminates Manhattan local minima in
+    rooms and around large obstacles.
+    """
+    if not grid.is_passable(goal[0], goal[1]):
+        return {}
+    h_table: Dict[Tuple[int, int], int] = {goal: 0}
+    queue = deque([goal])
+    while queue:
+        r, c = queue.popleft()
+        next_d = h_table[(r, c)] + 1
+        for nr, nc in grid.get_neighbors(r, c):
+            if (nr, nc) not in h_table:
+                h_table[(nr, nc)] = next_d
+                queue.append((nr, nc))
+    return h_table
+
+
+def get_location(path: List[Tuple[int, int]], t: int) -> Tuple[int, int]:
+    """Returns agent's position at timestep t (persisting at goal after path ends)."""
+    if t < len(path):
+        return path[t]
+    return path[-1]
+
+
+def get_path_cost(path: List[Tuple[int, int]]) -> int:
+    """Standard MAPF sum-of-costs metric: number of timesteps until goal is reached and held."""
+    if not path:
+        return 0
+    return len(path) - 1
 
 
 def space_time_astar(
-    grid: Grid,
+    grid: GridMap,
     start: Tuple[int, int],
     goal: Tuple[int, int],
-    constraints: Any = None,
-    max_timesteps: int = 1024,
+    constraints: Optional[Union[ConstraintSet, Iterable[Constraint]]] = None,
+    max_timesteps: Optional[int] = None,
     h_table: Optional[Dict[Tuple[int, int], int]] = None,
+    conflict_avoidance_table: Optional[Dict[Tuple[int, int, int], int]] = None,
 ) -> Optional[List[Tuple[int, int]]]:
     """
-    Space-time A* search for a single agent.
-    Returns path as [pos_at_t0, pos_at_t1, ...] or None.
+    Finds optimal single-agent path from start to goal respecting vertex and edge constraints.
     """
-    vertex_constraints, edge_constraints = _parse_constraints(constraints)
-
-    if (start[0], start[1], 0) in vertex_constraints:
-        return None
-
-    if not grid.is_valid(start[0], start[1]) or not grid.is_valid(goal[0], goal[1]):
+    if not grid.is_passable(start[0], start[1]) or not grid.is_passable(goal[0], goal[1]):
         return None
 
     if h_table is None:
@@ -100,61 +124,91 @@ def space_time_astar(
     if start not in h_table:
         return None
 
-    max_c_time = 0
-    for (_, _, t) in vertex_constraints:
-        if t > max_c_time:
-            max_c_time = t
-    for (_, _, _, _, t) in edge_constraints:
-        if t > max_c_time:
-            max_c_time = t
+    cs = coerce_constraint_set(constraints)
+    v_constraints = cs.vertex_constraints
+    e_constraints = cs.edge_constraints
 
-    h0 = h_table.get(start, manhattan_distance(start, goal))
-    # open_set item: (f_score, g_score, (x, y, timestep), path)
-    open_set = [(h0, 0, (start[0], start[1], 0), [start])]
-    closed_set: Set[Tuple[int, int, int]] = set()
+    if (start[0], start[1], 0) in v_constraints:
+        return None
 
-    while open_set:
-        f, g, (x, y, t), path = heapq.heappop(open_set)
+    gr, gc = goal
+    max_goal_constraint_t = -1
+    max_any_constraint_t = 0
+    for r, c, t in v_constraints:
+        if t > max_any_constraint_t:
+            max_any_constraint_t = t
+        if r == gr and c == gc and t > max_goal_constraint_t:
+            max_goal_constraint_t = t
 
-        if (x, y) == goal and t >= max_c_time:
+    if max_timesteps is None:
+        base_h = h_table[start]
+        max_timesteps = max(base_h + max_any_constraint_t + 60, grid.width + grid.height + 40)
+
+    start_h = h_table[start]
+    counter = 0
+    open_list = [(start_h, 0, start_h, 0, start[0], start[1], counter)]
+    best_g: Dict[Tuple[int, int, int], int] = {(start[0], start[1], 0): 0}
+    came_from: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
+
+    max_expansions = 150000
+    expansions = 0
+
+    while open_list:
+        f, cat_hits, h, t, r, c, _ = heapq.heappop(open_list)
+        if best_g.get((r, c, t), 999999999) < t:
+            continue
+
+        expansions += 1
+        if expansions > max_expansions:
+            return None
+
+        if r == gr and c == gc and t > max_goal_constraint_t:
+            path = []
+            curr = (r, c, t)
+            while curr in came_from:
+                path.append((curr[0], curr[1]))
+                curr = came_from[curr]
+            path.append((curr[0], curr[1]))
+            path.reverse()
             return path
 
-        state_key = (x, y, t)
-        if state_key in closed_set:
-            continue
-        closed_set.add(state_key)
-
-        if t >= max_timesteps:
+        if t + 1 > max_timesteps:
             continue
 
-        possible_moves = grid.get_neighbors(x, y) + [(x, y)]
-        next_t = t + 1
+        nt = t + 1
+        neighbors = grid.get_neighbors(r, c)
+        neighbors.append((r, c))
 
-        for nx, ny in possible_moves:
-            if (nx, ny, next_t) in vertex_constraints:
+        for nr, nc in neighbors:
+            nh = h_table.get((nr, nc))
+            if nh is None:
                 continue
-            if (x, y, nx, ny, next_t) in edge_constraints:
+            if (nr, nc, nt) in v_constraints:
                 continue
-            if (nx, ny, next_t) in closed_set:
+            if (r, c, nr, nc, nt) in e_constraints:
                 continue
 
-            next_g = g + 1
-            next_h = h_table.get((nx, ny), manhattan_distance((nx, ny), goal))
-            next_f = next_g + next_h
-            heapq.heappush(open_set, (next_f, next_g, (nx, ny, next_t), path + [(nx, ny)]))
+            next_state = (nr, nc, nt)
+            if best_g.get(next_state, 999999999) <= nt:
+                continue
+
+            best_g[next_state] = nt
+            came_from[next_state] = (r, c, t)
+            nf = nt + nh
+            ncat = cat_hits
+            if conflict_avoidance_table is not None:
+                ncat += conflict_avoidance_table.get(next_state, 0)
+            counter += 1
+            heapq.heappush(open_list, (nf, ncat, nh, nt, nr, nc, counter))
 
     return None
 
 
 class SpaceTimeAStar:
-    def __init__(self, grid: Grid):
+    """Legacy wrapper for Phase 0/1 scripts."""
+    def __init__(self, grid: GridMap):
         self.grid = grid
         self._h_cache: Dict[Tuple[int, int], Dict[Tuple[int, int], int]] = {}
-
-    def get_h(self, loc: Tuple[int, int], goal: Tuple[int, int]) -> int:
-        if goal not in self._h_cache:
-            self._h_cache[goal] = compute_bfs_h_table(self.grid, goal)
-        return self._h_cache[goal].get(loc, manhattan_distance(loc, goal))
 
     def find_path(
         self,
@@ -162,11 +216,11 @@ class SpaceTimeAStar:
         goal: Tuple[int, int],
         vertex_constraints: Set[Tuple[int, int, int]],
         edge_constraints: Set[Tuple[int, int, int, int, int]],
-        max_timestep: int = 1024,
+        max_timesteps: Optional[int] = None,
     ) -> Optional[List[Tuple[int, int]]]:
         if goal not in self._h_cache:
             self._h_cache[goal] = compute_bfs_h_table(self.grid, goal)
-        all_cons = list(vertex_constraints) + list(edge_constraints)
+        cs = ConstraintSet(vertex_constraints, edge_constraints)
         return space_time_astar(
-            self.grid, start, goal, all_cons, max_timestep, self._h_cache[goal]
+            self.grid, start, goal, cs, max_timesteps=max_timesteps, h_table=self._h_cache[goal]
         )

@@ -1,42 +1,62 @@
 """
 Grid and scenario parsing for Moving AI benchmark format.
-Supports both legacy Grid and modern GridMap interfaces.
+Provides both GridMap (row, col) and legacy Grid interfaces, plus load_map and load_scenarios.
 """
 import os
-import glob
+import random
+from collections import deque
 from typing import List, Tuple, Set, Dict, Optional, Union
 
 
-class Grid:
+class GridMap:
     """
     2D 4-connected grid map.
-    Traversable cells are '.' and 'G' (and 'S').
-    Obstacles are '@', 'O', 'T', 'W'.
-    Coordinates are (x, y) where x is horizontal/column [0..width-1],
-    and y is vertical/row [0..height-1].
+    Supports initialization via either:
+      - GridMap(width, height, passable_2d_bool_list)
+      - GridMap(width, height, obstacles_set)
     """
-    def __init__(self, width: int, height: int, obstacles: Set[Tuple[int, int]]):
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        passable_or_obstacles: Optional[Union[List[List[bool]], Set[Tuple[int, int]]]] = None,
+    ):
         self.width = width
         self.height = height
-        self.obstacles = set(obstacles)
+        if isinstance(passable_or_obstacles, list):
+            self.height = len(passable_or_obstacles)
+            self.width = len(passable_or_obstacles[0]) if self.height > 0 else width
+            self.passable = [ [bool(cell) for cell in row] for row in passable_or_obstacles ]
+            self.obstacles: Set[Tuple[int, int]] = set()
+            for r in range(self.height):
+                for c in range(self.width):
+                    if not self.passable[r][c]:
+                        self.obstacles.add((r, c))
+        else:
+            obs = set(passable_or_obstacles) if passable_or_obstacles is not None else set()
+            self.obstacles = obs
+            self.passable = [
+                [(r, c) not in self.obstacles for c in range(self.width)]
+                for r in range(self.height)
+            ]
 
-    def is_valid(self, x: int, y: int) -> bool:
-        return 0 <= x < self.width and 0 <= y < self.height and (x, y) not in self.obstacles
+    def is_passable(self, r: int, c: int) -> bool:
+        return 0 <= r < self.height and 0 <= c < self.width and self.passable[r][c]
 
-    def is_passable(self, x: int, y: int) -> bool:
-        return self.is_valid(x, y)
+    def is_valid(self, r: int, c: int) -> bool:
+        return self.is_passable(r, c)
 
-    def get_neighbors(self, x: int, y: int) -> List[Tuple[int, int]]:
+    def get_neighbors(self, r: int, c: int) -> List[Tuple[int, int]]:
         """Return 4-connected traversable neighbors."""
         neighbors = []
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = x + dx, y + dy
-            if self.is_valid(nx, ny):
-                neighbors.append((nx, ny))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < self.height and 0 <= nc < self.width and self.passable[nr][nc]:
+                neighbors.append((nr, nc))
         return neighbors
 
     @classmethod
-    def from_file(cls, filepath: str) -> "Grid":
+    def from_file(cls, filepath: str) -> "GridMap":
         with open(filepath, "r") as f:
             lines = [l.strip() for l in f if l.strip()]
 
@@ -53,56 +73,32 @@ class Grid:
                 map_start = i + 1
                 break
 
-        obstacles = set()
-        for y, row_line in enumerate(lines[map_start:map_start + height]):
-            for x, char in enumerate(row_line[:width]):
+        passable = [[True for _ in range(width)] for _ in range(height)]
+        for r, row_line in enumerate(lines[map_start : map_start + height]):
+            for c, char in enumerate(row_line[:width]):
                 if char in "@OTW":
-                    obstacles.add((x, y))
+                    passable[r][c] = False
 
-        return cls(width, height, obstacles)
+        return cls(width, height, passable)
 
 
-class GridMap(Grid):
-    """
-    GridMap supporting 2D passable boolean matrix or obstacle set.
-    """
-    def __init__(self, width: int, height: int, passable_or_obstacles: Union[List[List[bool]], Set[Tuple[int, int]]]):
-        if isinstance(passable_or_obstacles, (set, frozenset)):
-            super().__init__(width, height, passable_or_obstacles)
-            self.passable = [
-                [self.is_valid(x, y) for x in range(width)]
-                for y in range(height)
-            ]
-        else:
-            self.width = width
-            self.height = height
-            self.passable = passable_or_obstacles
-            obstacles = set()
-            for y in range(height):
-                for x in range(width):
-                    # Support both (y, x) indexing and (x, y) indexing if symmetric
-                    is_free = False
-                    if y < len(passable_or_obstacles) and x < len(passable_or_obstacles[y]):
-                        is_free = bool(passable_or_obstacles[y][x])
-                    if not is_free:
-                        obstacles.add((x, y))
-            self.obstacles = obstacles
+Grid = GridMap
 
 
 def load_map(filepath: str) -> GridMap:
-    """Load a Moving AI .map file into a GridMap."""
-    g = Grid.from_file(filepath)
-    return GridMap(g.width, g.height, g.obstacles)
+    return GridMap.from_file(filepath)
 
 
-def parse_scenario(filepath: str, max_agents: Optional[int] = None) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+def parse_scenario(
+    filepath: str, max_agents: Optional[int] = None
+) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
     """
     Parses a Moving AI .scen file.
-    Returns list of ((start_x, start_y), (goal_x, goal_y)).
+    Note: Moving AI .scen format stores (start_col, start_row, goal_col, goal_row) in columns 4..7.
+    Since GridMap uses (row, col) = (y, x), we store (sy, sx) and (gy, gx) so coordinates match
+    GridMap.from_file row/col indexing.
     """
     instances = []
-    if not os.path.exists(filepath):
-        return instances
     with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
@@ -112,64 +108,88 @@ def parse_scenario(filepath: str, max_agents: Optional[int] = None) -> List[Tupl
             if len(parts) >= 9:
                 sx, sy = int(parts[4]), int(parts[5])
                 gx, gy = int(parts[6]), int(parts[7])
-                instances.append(((sx, sy), (gx, gy)))
+                instances.append(((sy, sx), (gy, gx)))
                 if max_agents is not None and len(instances) >= max_agents:
                     break
     return instances
 
 
-def load_scenarios(filepath: str, k: int, max_scenarios: Optional[int] = None) -> List[Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]]:
+def _resolve_scen_file_for_idx(base_scen_path: str, scen_idx: int) -> Optional[str]:
     """
-    Loads scenarios for a benchmark instance.
-    Returns a list of scenarios: [(starts_list, goals_list), ...] where each starts_list has k elements.
-    If sibling scenario files exist (e.g. random-1.scen, random-2.scen, ...), loads each scenario file.
-    Otherwise, chunks the single scenario file.
+    Finds the scenario file corresponding to scen_idx (1-indexed).
+    Checks:
+      1. Exact numbered file alongside base_scen_path (e.g. data/random-32-32-20-random-{scen_idx}.scen)
+      2. Numbered file in data/scen-random/
+      3. Fallback to base_scen_path if it exists
     """
-    n_needed = max_scenarios if max_scenarios is not None else 25
-    scenarios = []
-
-    # Check for individual scenario files
-    # E.g., if filepath is "data/random-32-32-20-random-1.scen" or "data/scen-random/random-32-32-20-random-1.scen"
-    base_dir = os.path.dirname(filepath)
-    fname = os.path.basename(filepath)
-    
-    # Try finding sibling files like random-32-32-20-random-{s}.scen
     import re
-    match = re.search(r"^(.*-random-)(\d+)(\.scen)$", fname)
-    if match:
-        prefix, _, suffix = match.groups()
-        found_siblings = True
-        for s_idx in range(1, n_needed + 1):
-            cand_paths = [
-                os.path.join(base_dir, f"{prefix}{s_idx}{suffix}"),
-                os.path.join(base_dir, "scen-random", f"{prefix}{s_idx}{suffix}"),
-                os.path.join("data", f"{prefix}{s_idx}{suffix}"),
-                os.path.join("data", "scen-random", f"{prefix}{s_idx}{suffix}"),
-            ]
-            cand = next((p for p in cand_paths if os.path.exists(p)), None)
-            if cand is not None:
-                insts = parse_scenario(cand, max_agents=k)
-                if len(insts) >= k:
-                    scenarios.append(([x[0] for x in insts[:k]], [x[1] for x in insts[:k]]))
-            else:
-                found_siblings = False
+    dirname = os.path.dirname(base_scen_path)
+    basename = os.path.basename(base_scen_path)
+    replaced = re.sub(r"-random-\d+\.scen$", f"-random-{scen_idx}.scen", basename)
+
+    cand1 = os.path.join(dirname, replaced)
+    if os.path.exists(cand1):
+        return cand1
+
+    cand2 = os.path.join(dirname, "scen-random", replaced)
+    if os.path.exists(cand2):
+        return cand2
+
+    if os.path.exists(base_scen_path):
+        return base_scen_path
+
+    return None
+
+
+def load_scenarios(
+    scen_path: str, k: int, max_scenarios: int = 25
+) -> List[Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]]:
+    """
+    Loads up to `max_scenarios` scenario instances of `k` agents each.
+    Returns a list of (starts, goals) tuples.
+    """
+    scenarios: List[Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]] = []
+    for s_idx in range(1, max_scenarios + 1):
+        resolved = _resolve_scen_file_for_idx(scen_path, s_idx)
+        if resolved is None:
+            break
+        if resolved != scen_path or s_idx == 1:
+            pairs = parse_scenario(resolved, max_agents=None)
+            if len(pairs) < k:
                 break
-        if len(scenarios) >= n_needed:
-            return scenarios[:n_needed]
-
-    # Fallback: slice from the specified file
-    all_pairs = parse_scenario(filepath)
-    if not all_pairs:
-        return []
-
-    # Create n_needed slices
-    for s_idx in range(n_needed):
-        start_offset = s_idx * k
-        if start_offset + k <= len(all_pairs):
-            slice_pairs = all_pairs[start_offset : start_offset + k]
+            if resolved != scen_path or s_idx == 1:
+                selected = pairs[:k]
+            else:
+                rng = random.Random(1000 + s_idx)
+                selected = rng.sample(pairs, k)
         else:
-            # Wrap around with deterministic offset
-            slice_pairs = [all_pairs[(start_offset + i) % len(all_pairs)] for i in range(k)]
-        scenarios.append(([p[0] for p in slice_pairs], [p[1] for p in slice_pairs]))
+            all_pairs = parse_scenario(resolved, max_agents=None)
+            if len(all_pairs) < k:
+                break
+            # Deterministic slice/sample for scenario s_idx if using a single consolidated .scen file
+            offset = ((s_idx - 1) * 7) % max(1, len(all_pairs) - k + 1)
+            rng = random.Random(10000 + s_idx * 131)
+            pool = all_pairs[offset:] + all_pairs[:offset]
+            # Ensure unique starts and unique goals among k agents
+            starts_used = set()
+            goals_used = set()
+            selected = []
+            indices = list(range(len(pool)))
+            if s_idx > 1:
+                rng.shuffle(indices)
+            for idx in indices:
+                st, gl = pool[idx]
+                if st not in starts_used and gl not in goals_used:
+                    starts_used.add(st)
+                    goals_used.add(gl)
+                    selected.append((st, gl))
+                    if len(selected) == k:
+                        break
+            if len(selected) < k:
+                break
+
+        starts = [p[0] for p in selected]
+        goals = [p[1] for p in selected]
+        scenarios.append((starts, goals))
 
     return scenarios
