@@ -31,12 +31,45 @@ BETA = 0.5
 GAMMA = 0.5
 
 
+def _compute_real_mvc_delta(
+    conflict, c_cls: str, classified_conflicts: list, parent_mvc: int
+) -> float:
+    """
+    Bug 3 fix: Compute actual MVC(child) - MVC(parent) by constructing the child
+    cardinal conflict graph. Previously this was faked as 1.0 if cardinal else 0.0.
+
+    For conflict c = (a_i, a_j), the child where a_i is constrained resolves
+    the (a_i, a_j) cardinal edge. We remove it from the cardinal graph and recompute MVC.
+    For non-cardinal conflicts, constraining either agent costs nothing: delta = 0.
+    """
+    if c_cls not in ('cardinal', 'semi-cardinal'):
+        return 0.0
+
+    a_i = conflict.agent_1
+    a_j = conflict.agent_2
+
+    # Parent cardinal edges
+    parent_cardinal_edges = [
+        (c.agent_1, c.agent_2) for c, cls in classified_conflicts if cls == 'cardinal'
+    ]
+
+    # Child cardinal graph: remove the (a_i, a_j) edge that gets resolved by branching
+    child_edges = [
+        (u, v) for (u, v) in parent_cardinal_edges
+        if not ((u == a_i and v == a_j) or (u == a_j and v == a_i))
+    ]
+
+    mvc_child = ConflictGraph(child_edges).compute_mvc() if child_edges else 0
+    return float(mvc_child - parent_mvc)
+
+
 def run_proxy_labeling(
     regime: str = 'B',
     maps: List[str] = ['random-32-32-20', 'room-32-32-4'],
     k_values: List[int] = [20, 28, 40],
     scenarios_per_group: int = 5,
     max_queries_per_instance: int = 100,
+    max_candidates_per_query: int = 5,  # Bug 2 fix: enforce candidate cap
     output_csv: Optional[str] = None
 ) -> str:
     print(f"=== Phase 1.3: Proxy Labeling (Regime {regime}) ===")
@@ -156,6 +189,15 @@ def run_proxy_labeling(
 
                     parent_mvc = solver._compute_heuristic([(c, cls) for c, cls, _, _ in classified_conflicts])
 
+                    # Bug 2 fix: sort by delta_f_res (cost increase) descending and cap to max_candidates_per_query
+                    # Conflicts that force the highest cost increase are the most informative
+                    def _candidate_priority(item):
+                        c, c_cls, bp1, bp2 = item
+                        inc_i = 1 if c_cls == 'cardinal' else (0.5 if c_cls == 'semi-cardinal' else 0)
+                        return inc_i
+                    candidates = sorted(candidates, key=_candidate_priority, reverse=True)
+                    candidates = candidates[:max_candidates_per_query]
+
                     # Emit query if >= 2 candidates
                     if len(candidates) >= 2:
                         global_query_id += 1
@@ -192,9 +234,11 @@ def run_proxy_labeling(
                             cand_feats.append((c_idx, feat))
 
                             # Proxy metrics
-                            # 1. proxy_mvc_delta: estimated child MVC increase
-                            child_mvc_est = parent_mvc + (1 if c_cls == 'cardinal' else 0)
-                            p_mvc_delta = float(child_mvc_est - parent_mvc)
+                            # 1. proxy_mvc_delta: Bug 3 fix — compute REAL child MVC delta
+                            # not just a 0/1 cardinal indicator
+                            p_mvc_delta = _compute_real_mvc_delta(
+                                c, c_cls, [(x[0], x[1]) for x in classified_conflicts], parent_mvc
+                            )
 
                             # 2. proxy_downstream
                             p_downstream = float(down_i + down_j)

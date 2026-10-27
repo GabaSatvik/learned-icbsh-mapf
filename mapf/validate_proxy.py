@@ -265,17 +265,28 @@ def validate_proxy():
                         })
 
                     # Calculate within-query Spearman if variance exists
-                    if len(set(q_proxy_scores)) > 1 and len(set(q_rollout_costs)) > 1:
-                        corr, _ = spearmanr(q_proxy_scores, q_rollout_costs)
-                        if not np.isnan(corr):
-                            map_spearmans.append(corr)
+                    # Bug 1 fix: report NaN when variance is zero instead of silently skipping
+                    if len(q_proxy_scores) >= 2:
+                        has_proxy_var = len(set(q_proxy_scores)) > 1
+                        has_rollout_var = len(set(q_rollout_costs)) > 1
+                        if has_proxy_var and has_rollout_var:
+                            corr, _ = spearmanr(q_proxy_scores, q_rollout_costs)
+                            if not np.isnan(corr):
+                                map_spearmans.append(corr)
+                        else:
+                            # Zero variance in one or both signals — report NaN not 0.0
+                            map_spearmans.append(float('nan'))
 
-                # Stop this instance early
-                break
+                # Bug 4 fix: removed unconditional break so loop continues
+                # until target_queries_per_map queries are collected
 
-        mean_spearman = float(np.mean(map_spearmans)) if map_spearmans else 0.0
+        mean_spearman_vals = [s for s in map_spearmans if not np.isnan(s)]
+        mean_spearman = float(np.mean(mean_spearman_vals)) if mean_spearman_vals else float('nan')
+        nan_count = sum(1 for s in map_spearmans if np.isnan(s))
         per_map_spearmans[map_name] = mean_spearman
-        print(f"Map {map_name}: Evaluated {map_queries} queries, Mean Spearman = {mean_spearman:.4f}")
+        print(f"Map {map_name}: Evaluated {map_queries} queries, "
+              f"Mean Spearman = {'NaN (zero variance)' if np.isnan(mean_spearman) else f'{mean_spearman:.4f}'} "
+              f"({nan_count}/{len(map_spearmans)} queries had zero variance)")
 
     df = pd.DataFrame(validation_records)
     os.makedirs('results', exist_ok=True)
@@ -286,10 +297,14 @@ def validate_proxy():
     print("\n--- Summary: Mean Spearman Correlation (Proxy vs Real Rollouts) ---")
     valid_count = 0
     for m, sp in per_map_spearmans.items():
-        print(f"  {m:20s}: Spearman = {sp:+.4f} (Valid >= 0.3: {sp >= 0.3})")
-        if sp >= 0.3:
+        is_nan = np.isnan(sp)
+        valid = (not is_nan) and sp >= 0.3
+        sp_str = "NaN (undefined — zero variance in signals)" if is_nan else f"{sp:+.4f}"
+        print(f"  {m:20s}: Spearman = {sp_str} (Valid >= 0.3: {valid})")
+        if valid:
             valid_count += 1
 
+    # Bug 1 fix: threshold uses non-NaN spearmans only
     proxy_valid = (valid_count >= 1)  # out of 2 maps tested
     print(f"\nProxy Validity Check: {'PASSED' if proxy_valid else 'FAILED / INCONCLUSIVE'}")
     return per_map_spearmans

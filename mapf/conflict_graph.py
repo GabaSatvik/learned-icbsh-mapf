@@ -102,3 +102,28 @@ def compute_h4_and_graph(
 ) -> Tuple[int, CardinalConflictGraph]:
     graph = CardinalConflictGraph(classified_conflicts)
     return graph.exact_mvc_size(), graph
+
+
+class ConflictGraph:
+    """Legacy interface accepting a list of edges (u, v) for MVC computation."""
+    def __init__(self, edges: List[Tuple[int, int]]):
+        self.edges: Set[Tuple[int, int]] = set()
+        self.adj: Dict[int, Set[int]] = {}
+        for u, v in edges:
+            if u > v:
+                u, v = v, u
+            self.edges.add((u, v))
+            if u not in self.adj:
+                self.adj[u] = set()
+            if v not in self.adj:
+                self.adj[v] = set()
+            self.adj[u].add(v)
+            self.adj[v].add(u)
+
+    def compute_mvc(self) -> int:
+        if not self.edges:
+            return 0
+        dummy = CardinalConflictGraph([])
+        dummy.adj = self.adj
+        dummy.edges = self.edges
+        return dummy.exact_mvc_size()

@@ -88,6 +88,11 @@ def run_benchmark_calibration() -> Tuple[float, float, int]:
 
 def evaluate_budget_and_reductions(avg_cpu_per_inst: float, avg_nodes_per_inst: int) -> Dict[str, str]:
     print("\n=== Step 3 & 4: Extrapolate Phase 1 and Phase 2 compute cost ===")
+    # Bug 10 fix: add explicit warning that extrapolations are order-of-magnitude only.
+    # Phase 0 extrapolated 0.003 CPU-hours for Phase 1 proxy labeling; actual was 0.255 CPU-hours (85x off).
+    print("  [WARNING] These extrapolations are order-of-magnitude estimates only (±10-85x).")
+    print("  [WARNING] Do NOT treat these as accurate budget commitments.")
+    print("  [WARNING] Always verify with a small pilot run before committing to full scale.")
     # Phase 1: Proxy labeling: ~0.05s per query (no rollout)
     # Phase 2: Rollout labeling: B_rollout=300, T_rollout=0.5s, top-3 candidates
     # Estimated queries per instance at training (3 maps, 3 k-values, 5 scenarios = 45 instances)
@@ -104,10 +109,10 @@ def evaluate_budget_and_reductions(avg_cpu_per_inst: float, avg_nodes_per_inst: 
     phase2_bench_cpu_hours = (3 * 3 * 10 * 6 * avg_cpu_per_inst) / 3600.0
     phase2_total_cpu_hours = phase2_est_cpu_hours + phase2_bench_cpu_hours
 
-    print(f"  Estimated Phase 1 proxy labeling compute: {phase1_est_cpu_hours:.3f} CPU-hours")
-    print(f"  Estimated Phase 2 rollout labeling compute: {phase2_est_cpu_hours:.3f} CPU-hours")
-    print(f"  Estimated Phase 2 full benchmark compute: {phase2_bench_cpu_hours:.3f} CPU-hours")
-    print(f"  Estimated Phase 2 total compute: {phase2_total_cpu_hours:.3f} CPU-hours")
+    print(f"  Estimated Phase 1 proxy labeling compute: {phase1_est_cpu_hours:.3f} CPU-hours (WARNING: ±85x accuracy)")
+    print(f"  Estimated Phase 2 rollout labeling compute: {phase2_est_cpu_hours:.3f} CPU-hours (WARNING: ±10x accuracy)")
+    print(f"  Estimated Phase 2 full benchmark compute: {phase2_bench_cpu_hours:.3f} CPU-hours (WARNING: ±10x accuracy)")
+    print(f"  Estimated Phase 2 total compute: {phase2_total_cpu_hours:.3f} CPU-hours (WARNING: ±10x accuracy)")
 
     config = {
         'max_queries_per_instance': '100',

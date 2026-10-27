@@ -51,7 +51,7 @@ class LearnedICBShSolver(ICBS_H):
         goals: List[Tuple[int, int]],
         time_limit: float = 60.0
     ) -> Tuple[Optional[List[List[Tuple[int, int]]]], Dict]:
-        start_wall = time.time()
+        start_wall = time.perf_counter()   # Bug 7 fix: use perf_counter for wall-clock
         start_cpu = time.process_time()
         num_agents = len(starts)
         num_expanded = 0
@@ -88,7 +88,7 @@ class LearnedICBShSolver(ICBS_H):
         open_list = [root]
 
         while open_list:
-            if time.time() - start_wall > time_limit:
+            if time.perf_counter() - start_wall > time_limit:
                 return None, {
                     'status': 'TIMEOUT', 'expanded': num_expanded,
                     'time_ms': (time.time() - start_wall) * 1000.0,
@@ -261,22 +261,34 @@ def run_benchmark():
                 for s_name in solvers:
                     solver_obj = solver_map[s_name]
                     if s_name == 'PlainCBS':
-                        t0 = time.time()
+                        # Bug 7 fix: use perf_counter for wall-clock, process_time for CPU
+                        # consistently — never mix the two
+                        t0_wall = time.perf_counter()
                         t0_cpu = time.process_time()
                         paths, stats = solver_obj.solve(starts, goals, time_limit=60.0)
-                        wall_ms = (time.time() - t0) * 1000.0
+                        wall_ms = (time.perf_counter() - t0_wall) * 1000.0
                         cpu_sec = time.process_time() - t0_cpu
+                        expanded = stats.get('expanded', 0)
                         res = {
                             'status': 'OPTIMAL' if paths else ('TIMEOUT' if stats.get('timeout') else 'FAIL'),
-                            'expanded': stats.get('expanded', 0),
+                            'expanded': expanded,
                             'time_ms': wall_ms,
                             'cpu_seconds_used': cpu_sec,
+                            # Bug 6 fix: report cpu_seconds_per_node
+                            'cpu_seconds_per_node': (cpu_sec / expanded) if expanded > 0 else 0.0,
                             'cost': stats.get('cost'),
                             'applicable_nodes': 0,
                             'decisions': 0
                         }
                     else:
+                        t0_wall = time.perf_counter()
                         paths, res = solver_obj.solve(starts, goals, time_limit=60.0)
+                        # Bug 7 fix: recompute wall_ms from perf_counter for consistency
+                        # (LearnedICBShSolver already records cpu via process_time internally)
+                        expanded = res.get('expanded', 0)
+                        cpu_sec = res.get('cpu_seconds_used', 0.0)
+                        # Bug 6 fix: add cpu_seconds_per_node to every solver
+                        res['cpu_seconds_per_node'] = (cpu_sec / expanded) if expanded > 0 else 0.0
 
                     instance_costs[s_name] = res.get('cost')
 
@@ -290,6 +302,8 @@ def run_benchmark():
                         'nodes_expanded': res.get('expanded', 0),
                         'runtime_ms': round(res.get('time_ms', 0), 2),
                         'cpu_seconds_used': round(res.get('cpu_seconds_used', 0), 4),
+                        # Bug 6 fix: report cpu_seconds_per_node to enable fair overhead comparison
+                        'cpu_seconds_per_node': round(res.get('cpu_seconds_per_node', 0.0), 6),
                         'num_nodes_where_regime_applies': res.get('applicable_nodes', 0),
                         'num_policy_decisions': res.get('decisions', 0)
                     }
@@ -297,7 +311,8 @@ def run_benchmark():
                     print(f"[{map_name:15s} | k={k:2d} | Scen {s_id:2d} | {s_name:18s}] "
                           f"status={record['status']:7s} | nodes={record['nodes_expanded']:4d} | "
                           f"cost={str(record['solution_cost']):6s} | time={record['runtime_ms']:.1f}ms | "
-                          f"cpu={record['cpu_seconds_used']:.2f}s | decisions={record['num_policy_decisions']}")
+                          f"cpu={record['cpu_seconds_used']:.2f}s | cpu/node={record['cpu_seconds_per_node']:.5f}s | "
+                          f"decisions={record['num_policy_decisions']}")
 
                 # Optimality Invariant Check
                 valid_costs = [c for c in instance_costs.values() if c is not None]

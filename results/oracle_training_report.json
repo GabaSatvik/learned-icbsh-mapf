@@ -1,0 +1,78 @@
+{
+  "gate_passed": true,
+  "xgb_mean_spearman": 0.7030609737004536,
+  "spearman_gate_threshold": 0.3,
+  "cv_summary": {
+    "XGBRanker": {
+      "mean_spearman": 0.7030609737004536,
+      "std_spearman": 0.041147703100031824,
+      "mean_ndcg3": 0.9066900673935707,
+      "n_valid_folds": 5
+    },
+    "LinearRanker": {
+      "mean_spearman": 0.49055173713678774,
+      "std_spearman": 0.01731660998647962,
+      "mean_ndcg3": 0.8440999301402291,
+      "n_valid_folds": 5
+    },
+    "RandomRanker": {
+      "mean_spearman": 0.002688490590523443,
+      "std_spearman": 0.016435829346912425,
+      "mean_ndcg3": 0.5788683298556941,
+      "n_valid_folds": 5
+    }
+  },
+  "ablation_results": {
+    "corridor": {
+      "mean_spearman": 0.7012249614150449,
+      "delta": -0.0018360122854087502,
+      "n_features": 2
+    },
+    "congestion": {
+      "mean_spearman": 0.7032913937409379,
+      "delta": 0.00023042004048423603,
+      "n_features": 2
+    },
+    "conflict_frequency": {
+      "mean_spearman": 0.7025234007614186,
+      "delta": -0.0005375729390350026,
+      "n_features": 1
+    },
+    "goal_distance": {
+      "mean_spearman": 0.6985420835736915,
+      "delta": -0.0045188901267620984,
+      "n_features": 2
+    },
+    "affected_agents": {
+      "mean_spearman": 0.6408093372339263,
+      "delta": -0.062251636466527316,
+      "n_features": 3
+    },
+    "downstream": {
+      "mean_spearman": 0.6914200275285018,
+      "delta": -0.011640946171951772,
+      "n_features": 2
+    },
+    "delta_f_res": {
+      "mean_spearman": 0.698235165549618,
+      "delta": -0.004825808150835664,
+      "n_features": 1
+    }
+  },
+  "top_features": {
+    "pair_conflict_count": 0.1391076296567917,
+    "conflict_time": 0.11555925756692886,
+    "is_edge_conflict": 0.08031830191612244,
+    "conflict_type": 0.06716936081647873,
+    "num_agents_in_conflict_graph": 0.0625210776925087,
+    "agent_j_path_length": 0.06072954833507538,
+    "delta_f_res": 0.051464904099702835,
+    "cardinal_degree_i": 0.05142785608768463,
+    "goal_dist_i": 0.04819860681891441,
+    "goal_dist_j": 0.04726304113864899
+  },
+  "n_rows": 14841,
+  "n_queries": 3834,
+  "n_features": 19,
+  "elapsed_seconds": 19.707056800019927
+}

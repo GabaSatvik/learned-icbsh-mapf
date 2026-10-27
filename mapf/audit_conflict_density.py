@@ -240,27 +240,47 @@ def run_audit():
     df.to_csv(out_csv, index=False)
     print(f"\nAudit completed. Saved {len(df)} records to {out_csv}")
 
+    # Bug 8 fix: recompute density numbers from the raw CSV data, not from inline summaries
+    df_valid = df[df['status'] != 'NO_ROOT_PATH']
+
+    # Bug 9 fix: report per-(map,k) prevalence RANGE, not a single BOTH_APPLICABLE verdict
+    print("\n--- Per-(map,k) Conflict Prevalence (Bug 9 fix: ranges reported) ---")
+    grouped = df_valid.groupby(['map', 'k'])
+    cell_rates_b = {}
+    cell_rates_a = {}
+    for (m, k_val), grp in grouped:
+        rate_b = (grp['max_total_conflicts_at_any_node'] >= 2).mean()
+        rate_a = (grp['max_cardinal_conflicts_at_any_node'] >= 2).mean()
+        cell_rates_b[(m, k_val)] = rate_b
+        cell_rates_a[(m, k_val)] = rate_a
+        frac_b_col = grp['fraction_of_nodes_with_ge2_total_conflicts'].mean()
+        frac_a_col = grp['fraction_of_nodes_with_ge2_cardinal_conflicts'].mean()
+        print(f"  [{m:20s} | k={k_val:2d}] Regime B instance rate={rate_b:.2f} "
+              f"node frac={frac_b_col:.3f} | Regime A instance rate={rate_a:.2f} "
+              f"node frac={frac_a_col:.3f}")
+
+    # Bug 8 fix: compute correct overall prevalence from CSV
+    if len(df_valid) > 0:
+        regime_b_overall = (df_valid['max_total_conflicts_at_any_node'] >= 2).mean()
+        regime_a_overall = (df_valid['max_cardinal_conflicts_at_any_node'] >= 2).mean()
+    else:
+        regime_b_overall = 0.0
+        regime_a_overall = 0.0
+
+    max_rate_b = max(cell_rates_b.values()) if cell_rates_b else 0.0
+    max_rate_a = max(cell_rates_a.values()) if cell_rates_a else 0.0
+    min_rate_b = min(cell_rates_b.values()) if cell_rates_b else 0.0
+    min_rate_a = min(cell_rates_a.values()) if cell_rates_a else 0.0
+
+    print(f"\n--- Bug 8 fix: Correct Density Audit Numbers (recomputed from CSV) ---")
+    print(f"Regime B (>=2 total conflicts): Overall instance prevalence = {regime_b_overall*100:.1f}%")
+    print(f"  Per-cell range: {min_rate_b*100:.1f}% to {max_rate_b*100:.1f}% (max cell rate)")
+    print(f"Regime A (>=2 cardinal conflicts): Overall instance prevalence = {regime_a_overall*100:.1f}%")
+    print(f"  Per-cell range: {min_rate_a*100:.1f}% to {max_rate_a*100:.1f}% (max cell rate)")
+
     # Decision rule evaluation
-    # Regime A: frac_ge2_cardinal > 0 or max_cardinal >= 2 in >= 30% of instances somewhere
-    # Check if there is any (map, k) cell where instances with >=2 cardinal conflicts appear in >= 30% of instances
-    # Or globally across instances
-    regime_a_instances = df[df['max_cardinal_conflicts_at_any_node'] >= 2]
-    regime_b_instances = df[df['max_total_conflicts_at_any_node'] >= 2]
-
-    frac_a_overall = len(regime_a_instances) / len(df) if len(df) > 0 else 0
-    frac_b_overall = len(regime_b_instances) / len(df) if len(df) > 0 else 0
-
-    # Also check per (map, k) maximum instance prevalence
-    grouped = df.groupby(['map', 'k'])
-    max_rate_a_in_any_cell = grouped.apply(lambda g: (g['max_cardinal_conflicts_at_any_node'] >= 2).mean()).max()
-    max_rate_b_in_any_cell = grouped.apply(lambda g: (g['max_total_conflicts_at_any_node'] >= 2).mean()).max()
-
-    print("\n--- Conflict Density Decision Rule ---")
-    print(f"Regime A (>=2 cardinal conflicts): Max cell rate = {max_rate_a_in_any_cell*100:.1f}%, Overall rate = {frac_a_overall*100:.1f}%")
-    print(f"Regime B (>=2 total conflicts):    Max cell rate = {max_rate_b_in_any_cell*100:.1f}%, Overall rate = {frac_b_overall*100:.1f}%")
-
-    regime_a_applies = (max_rate_a_in_any_cell >= 0.30)
-    regime_b_applies = (max_rate_b_in_any_cell >= 0.50)
+    regime_a_applies = (max_rate_a >= 0.30)
+    regime_b_applies = (max_rate_b >= 0.50)
 
     if regime_a_applies and regime_b_applies:
         verdict = "BOTH_APPLICABLE"
@@ -272,10 +292,18 @@ def run_audit():
         verdict = "NO_DOMAIN"
 
     print(f"\nVERDICT: {verdict}")
+    print(f"(Bug 9 fix: Regime A applicability ranges from {min_rate_a*100:.0f}% to {max_rate_a*100:.0f}% "
+          f"across (map,k) cells — not a single binary verdict)")
     with open("results/density_audit_verdict.txt", "w") as f:
         f.write(f"{verdict}\n")
-        f.write(f"Regime A max cell rate: {max_rate_a_in_any_cell:.4f}\n")
-        f.write(f"Regime B max cell rate: {max_rate_b_in_any_cell:.4f}\n")
+        f.write(f"Regime A max cell rate: {max_rate_a:.4f}\n")
+        f.write(f"Regime A min cell rate: {min_rate_a:.4f}\n")
+        f.write(f"Regime A overall instance prevalence: {regime_a_overall:.4f}\n")
+        f.write(f"Regime B max cell rate: {max_rate_b:.4f}\n")
+        f.write(f"Regime B min cell rate: {min_rate_b:.4f}\n")
+        f.write(f"Regime B overall instance prevalence: {regime_b_overall:.4f}\n")
+        f.write(f"Note: Bug 8 fix — numbers recomputed from raw CSV not from inline summaries\n")
+        f.write(f"Note: Bug 9 fix — range reported not single verdict\n")
 
 
 if __name__ == "__main__":
