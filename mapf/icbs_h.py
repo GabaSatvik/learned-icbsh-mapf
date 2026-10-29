@@ -12,6 +12,8 @@ from mapf.low_level import (
     space_time_astar,
     get_path_cost,
     compute_bfs_h_table,
+    reset_astar_call_count,
+    get_astar_call_count,
 )
 from mapf.conflicts import Conflict, Constraint, detect_all_conflicts
 from mapf.cardinal import (
@@ -96,6 +98,11 @@ class ICBShSolver:
         shared_path_cache: Optional[Dict[Tuple[int, Tuple[frozenset, frozenset]], Optional[List[Tuple[int, int]]]]] = None,
     ) -> Dict[str, Any]:
         start_time = time.perf_counter()
+        reset_astar_call_count()
+        if hasattr(self.conflict_selector, 'ml_tiebreaks'):
+            self.conflict_selector.ml_tiebreaks = 0
+        if hasattr(self.conflict_selector, 'analytical_shortcircuits'):
+            self.conflict_selector.analytical_shortcircuits = 0
         k = len(starts)
 
         h_tables = shared_h_tables if shared_h_tables is not None else [compute_bfs_h_table(self.grid, goals[i]) for i in range(k)]
@@ -106,7 +113,12 @@ class ICBShSolver:
                     "cost": None,
                     "nodes_expanded": 0,
                     "decision_nodes": 0,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                 }
 
         max_base_dist = max(h_tables[i][starts[i]] for i in range(k)) if k > 0 else 0
@@ -137,7 +149,12 @@ class ICBShSolver:
                     "cost": None,
                     "nodes_expanded": 0,
                     "decision_nodes": 0,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                 }
             path_cache[(i, root_constraints[i].freeze_key())] = p
             root_paths.append(p)
@@ -152,6 +169,11 @@ class ICBShSolver:
                 "nodes_expanded": 1,
                 "bypass_count": 0,
                 "decision_nodes": 0,
+                "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
                 "runtime": time.perf_counter() - start_time,
             }
 
@@ -197,7 +219,12 @@ class ICBShSolver:
                     "nodes_expanded": nodes_expanded,
                     "bypass_count": bypass_count,
                     "decision_nodes": decision_nodes,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                 }
 
             if max_expansions is not None and nodes_expanded >= max_expansions:
@@ -207,7 +234,12 @@ class ICBShSolver:
                     "nodes_expanded": nodes_expanded,
                     "bypass_count": bypass_count,
                     "decision_nodes": decision_nodes,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                 }
 
             node = heapq.heappop(open_list)
@@ -226,7 +258,12 @@ class ICBShSolver:
                     "nodes_expanded": nodes_expanded,
                     "bypass_count": bypass_count,
                     "decision_nodes": decision_nodes,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                 }
 
             can_bypass = self.enable_bypass and (node.bypass_steps < k * 3)
@@ -283,7 +320,12 @@ class ICBShSolver:
                         "nodes_expanded": nodes_expanded,
                         "bypass_count": bypass_count,
                         "decision_nodes": decision_nodes,
-                        "runtime": time.perf_counter() - start_time,
+                        "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
                     }
                 new_classified = classify_conflicts(
                     self.grid,
@@ -481,6 +523,11 @@ class ICBShSolver:
             "nodes_expanded": nodes_expanded,
             "bypass_count": bypass_count,
             "decision_nodes": decision_nodes,
+            "astar_calls": get_astar_call_count(),
+            "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+            "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
             "runtime": time.perf_counter() - start_time,
         }
 

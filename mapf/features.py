@@ -10,7 +10,7 @@ import numpy as np
 
 from mapf.grid import GridMap
 from mapf.low_level import get_location, get_path_cost, compute_bfs_h_table
-from mapf.conflicts import detect_all_conflicts
+from mapf.conflicts import detect_all_conflicts, count_single_agent_conflicts, count_single_agent_conflicts
 from mapf.cardinal import ClassifiedConflict
 from mapf.conflict_graph import CardinalConflictGraph, compute_residual_mvc_size
 
@@ -173,18 +173,18 @@ class FeatureExtractor:
             if cc.alt_total_conflicts_i < 999999:
                 downstream_i = float(cc.alt_total_conflicts_i)
             elif cc.alt_path_i is not None:
-                temp_paths_i = list(paths)
-                temp_paths_i[i] = cc.alt_path_i
-                downstream_i = float(len(detect_all_conflicts(temp_paths_i)))
+                # O(k*T) single-agent scan instead of O(k^2*T) full detect_all_conflicts
+                _max_len = max(len(p) for p in paths)
+                downstream_i = float(count_single_agent_conflicts(paths, i, cc.alt_path_i, _max_len))
             else:
                 downstream_i = 50.0
 
             if cc.alt_total_conflicts_j < 999999:
                 downstream_j = float(cc.alt_total_conflicts_j)
             elif cc.alt_path_j is not None:
-                temp_paths_j = list(paths)
-                temp_paths_j[j] = cc.alt_path_j
-                downstream_j = float(len(detect_all_conflicts(temp_paths_j)))
+                # O(k*T) single-agent scan instead of O(k^2*T) full detect_all_conflicts
+                _max_len = max(len(p) for p in paths)
+                downstream_j = float(count_single_agent_conflicts(paths, j, cc.alt_path_j, _max_len))
             else:
                 downstream_j = 50.0
 

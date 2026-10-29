@@ -13,6 +13,8 @@ from mapf.low_level import (
     space_time_astar,
     get_path_cost,
     compute_bfs_h_table,
+    reset_astar_call_count,
+    get_astar_call_count,
 )
 from mapf.conflicts import Conflict, detect_first_conflict
 from mapf.cardinal import build_constraint_for_agent
@@ -40,6 +42,7 @@ class PlainCBS:
         shared_path_cache: Optional[Dict[Tuple[int, Tuple[frozenset, frozenset]], Optional[List[Tuple[int, int]]]]] = None,
     ) -> Dict[str, Any]:
         start_time = time.perf_counter()
+        reset_astar_call_count()
         k = len(starts)
 
         h_tables = shared_h_tables if shared_h_tables is not None else [compute_bfs_h_table(self.grid, goals[i]) for i in range(k)]
@@ -49,7 +52,8 @@ class PlainCBS:
                     "status": "NO_ROOT_PATH",
                     "cost": None,
                     "nodes_expanded": 0,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "runtime": time.perf_counter() - start_time,
                 }
 
         max_base_dist = max(h_tables[i][starts[i]] for i in range(k)) if k > 0 else 0
@@ -68,7 +72,8 @@ class PlainCBS:
                     "status": "NO_ROOT_PATH",
                     "cost": None,
                     "nodes_expanded": 0,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "runtime": time.perf_counter() - start_time,
                 }
             path_cache[(i, root_constraints[i].freeze_key())] = p
             root_paths.append(p)
@@ -84,14 +89,16 @@ class PlainCBS:
                     "status": "TIMEOUT",
                     "cost": None,
                     "nodes_expanded": nodes_expanded,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "runtime": time.perf_counter() - start_time,
                 }
             if max_expansions is not None and nodes_expanded >= max_expansions:
                 return {
                     "status": "MAX_EXPANSIONS",
                     "cost": None,
                     "nodes_expanded": nodes_expanded,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "runtime": time.perf_counter() - start_time,
                 }
 
             curr = heapq.heappop(open_list)
@@ -104,7 +111,8 @@ class PlainCBS:
                     "cost": curr.cost,
                     "paths": curr.paths,
                     "nodes_expanded": nodes_expanded,
-                    "runtime": time.perf_counter() - start_time,
+                    "astar_calls": get_astar_call_count(),
+                "runtime": time.perf_counter() - start_time,
                 }
 
             for agent_id in (conflict.agent_i, conflict.agent_j):
@@ -141,6 +149,7 @@ class PlainCBS:
             "status": "UNSOLVABLE",
             "cost": None,
             "nodes_expanded": nodes_expanded,
+            "astar_calls": get_astar_call_count(),
             "runtime": time.perf_counter() - start_time,
         }
 

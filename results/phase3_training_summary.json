@@ -1,76 +1,80 @@
 {
-  "n_rows": 14841,
-  "n_queries": 3834,
+  "n_rows": 6789,
+  "n_queries": 2251,
   "n_features": 24,
   "cv_xgb_folds": [
-    0.8358110514530948,
-    0.8510323039525649,
-    0.8510663898681721,
-    0.8242020681076688,
-    0.8668029421383816
+    0.43588001871428156,
+    0.39523745285740186,
+    0.47727028449860404,
+    0.5380310566451676,
+    0.4423870187824073
   ],
-  "cv_xgb_mean": 0.8457829511039765,
-  "cv_linear_mean": 0.5765818904057635,
-  "cv_random_mean": 0.0008767288179793644,
+  "cv_xgb_mean": 0.45776116629957253,
+  "cv_xgb_hard_mean": 0.44795037354267364,
+  "cv_xgb_easy_mean": 0.7993545915962857,
+  "cv_linear_mean": 0.25887786724239514,
+  "cv_random_mean": -0.04588766369921986,
   "cross_map_transfer": {
-    "train_random-32-32-20_test_other": 0.7603235464244906,
-    "train_room-32-32-4_test_other": 0.777285667777684
+    "train_Paris_1_256_test_other": 0.19170721186073178,
+    "train_random-32-32-20_test_other": 0.28052612218532796,
+    "train_room-32-32-4_test_other": 0.33720421987536753,
+    "train_warehouse-32-32-aisles_test_other": 0.22165478943461295
   },
   "feature_importances": {
-    "delta_g_max": 0.11537828296422958,
-    "mvc_size": 0.10150052607059479,
-    "delta_g_j": 0.09224055707454681,
-    "conflict_type": 0.08788306266069412,
-    "delta_g_i": 0.07840266078710556,
-    "marginal_conflict_delta_min": 0.06933960318565369,
-    "cardinal_degree_i": 0.062329456210136414,
-    "conflict_time": 0.06102167069911957,
-    "cardinal_degree_j": 0.05975358560681343,
-    "num_agents_in_conflict_graph": 0.05905403941869736,
-    "pair_conflict_count": 0.03783933073282242,
-    "goal_dist_i": 0.028636164963245392,
-    "downstream_conflict_count_i": 0.02340397797524929,
-    "downstream_conflict_count_j": 0.018219247460365295,
-    "delta_f_res": 0.017310164868831635,
-    "agent_i_path_length": 0.015912096947431564,
-    "goal_dist_j": 0.015240177512168884,
-    "local_density_j": 0.01523869950324297,
-    "agent_j_path_length": 0.01206253468990326,
-    "local_density_i": 0.011906122788786888,
-    "corridor_score_j": 0.009444590657949448,
-    "corridor_score_i": 0.007883376441895962,
-    "is_edge_conflict": 0.0,
+    "delta_g_max": 0.1792781949043274,
+    "conflict_type": 0.10804712772369385,
+    "is_edge_conflict": 0.06709715723991394,
+    "marginal_conflict_delta_min": 0.06482280045747757,
+    "downstream_conflict_count_j": 0.050517722964286804,
+    "goal_dist_j": 0.05047153681516647,
+    "delta_g_j": 0.05021914094686508,
+    "local_density_j": 0.04739809408783913,
+    "delta_g_i": 0.04483465850353241,
+    "agent_j_path_length": 0.044336747378110886,
+    "goal_dist_i": 0.04062618687748909,
+    "conflict_time": 0.03923584148287773,
+    "agent_i_path_length": 0.03873400390148163,
+    "pair_conflict_count": 0.03601551428437233,
+    "delta_f_res": 0.030899422243237495,
+    "downstream_conflict_count_i": 0.027809951454401016,
+    "cardinal_degree_j": 0.022192271426320076,
+    "mvc_size": 0.018456190824508667,
+    "cardinal_degree_i": 0.016024461016058922,
+    "num_agents_in_conflict_graph": 0.01509365625679493,
+    "corridor_score_i": 0.007667341269552708,
+    "corridor_score_j": 0.0002219983289251104,
+    "local_density_i": 0.0,
     "delta_g_min": 0.0
   },
   "ablations": {
-    "full_model": 0.8457829511039765,
+    "full_model": 0.45776116629957253,
     "no_corridor": {
-      "spearman": 0.8417702795665922,
-      "delta": -0.004012671537384271
+      "spearman": 0.4599394921386101,
+      "delta": 0.0021783258390375426
     },
     "no_congestion": {
-      "spearman": 0.8432894286886248,
-      "delta": -0.0024935224153517233
+      "spearman": 0.44815941469543236,
+      "delta": -0.009601751604140174
     },
     "no_conflict_frequency": {
-      "spearman": 0.8421340201315107,
-      "delta": -0.0036489309724657693
+      "spearman": 0.42166605637828214,
+      "delta": -0.03609510992129039
     },
     "no_goal_distance": {
-      "spearman": 0.855377490926478,
-      "delta": 0.009594539822501469
+      "spearman": 0.44599046029047107,
+      "delta": -0.011770706009101461
     },
     "no_affected_agents": {
-      "spearman": 0.7739621066205593,
-      "delta": -0.07182084448341719
+      "spearman": 0.4488064316815247,
+      "delta": -0.008954734618047855
     },
     "no_downstream": {
-      "spearman": 0.7297924099708358,
-      "delta": -0.11599054113314067
+      "spearman": 0.3989077971564179,
+      "delta": -0.058853369143154644
     },
     "no_cached_lookahead": {
-      "spearman": 0.7623005941901939,
-      "delta": -0.08348235691378258
+      "spearman": 0.42285229393058776,
+      "delta": -0.03490887236898477
     }
   }
 }

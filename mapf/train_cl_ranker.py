@@ -95,23 +95,35 @@ def train_and_evaluate(
     linear_out: str = "models/linear_cl_oracle.pkl",
     summary_out: str = "results/phase3_training_summary.json",
 ):
+    # Fallback dataset loading: benchmark dataset first, then cl_oracle_training
+    _primary = "data/mapf_ct_benchmark_dataset.csv"
+    if not os.path.exists(csv_path) and os.path.exists(_primary):
+        print(f"[Train CL-Ranker] {csv_path} not found, using {_primary}.")
+        csv_path = _primary
     df = pd.read_csv(csv_path)
     feature_cols = [c for c in FEATURE_NAMES if c in df.columns]
     print(f"[Train CL-Ranker] Loaded {len(df)} rows ({df['query_id'].nunique()} queries) with {len(feature_cols)} features.")
 
     df = df.sort_values("query_id").reset_index(drop=True)
     X = df[feature_cols].values
-    y = df["relevance"].values
+    # Use relevance column if available, else fall back to oracle_score
+    _target_col = "relevance" if "relevance" in df.columns else "oracle_score"
+    print(f"[Train CL-Ranker] Using '{_target_col}' as training target.")
+    y = df[_target_col].values
+    # Ensure compute_mean_query_spearman uses the correct target column
+    if _target_col != "oracle_score" and "oracle_score" not in df.columns:
+        df["oracle_score"] = df[_target_col]
     groups_inst = (df["map_name"].astype(str) + "_k" + df["k"].astype(str) + "_s" + df["scenario_id"].astype(str)).values
 
     # 1. 5-Fold GroupKFold Cross-Validation
     gkf = GroupKFold(n_splits=5)
     xgb_folds, lin_folds, rand_folds = [], [], []
+    xgb_hard_folds, xgb_easy_folds = [], []
     rng = np.random.default_rng(42)
 
     for fold_idx, (tr_idx, te_idx) in enumerate(gkf.split(X, y, groups=groups_inst), 1):
         df_tr, df_te = df.iloc[tr_idx], df.iloc[te_idx]
-        X_tr, y_tr = df_tr[feature_cols].values, df_tr["relevance"].values
+        X_tr, y_tr = df_tr[feature_cols].values, df_tr[_target_col].values
         X_te = df_te[feature_cols].values
         q_sizes_tr = df_tr.groupby("query_id", sort=False).size().values
 
@@ -131,12 +143,43 @@ def train_and_evaluate(
         rand_rho = compute_mean_query_spearman(df_te, rand_preds)
         rand_folds.append(rand_rho)
 
-        print(f"  Fold {fold_idx}: XGBRanker={xgb_rho:+.4f} | Linear={lin_rho:+.4f} | Random={rand_rho:+.4f}")
+        # Hard analytical tie / easy query breakdown
+        _has_tie_col = "is_analytical_tie" in df_te.columns
+        if _has_tie_col:
+            df_te_hard = df_te[df_te["is_analytical_tie"] == 1]
+            df_te_easy = df_te[df_te["is_analytical_tie"] == 0]
+            if len(df_te_hard) >= 10:
+                hard_rho = compute_mean_query_spearman(df_te_hard, ranker.predict(df_te_hard[feature_cols].values))
+            else:
+                hard_rho = float("nan")
+            if len(df_te_easy) >= 10:
+                easy_rho = compute_mean_query_spearman(df_te_easy, ranker.predict(df_te_easy[feature_cols].values))
+            else:
+                easy_rho = float("nan")
+            xgb_hard_folds.append(hard_rho)
+            xgb_easy_folds.append(easy_rho)
+            print(
+                f"  Fold {fold_idx}: XGBRanker={xgb_rho:+.4f} "
+                f"(Hard={hard_rho:+.4f} Easy={easy_rho:+.4f}) "
+                f"| Linear={lin_rho:+.4f} | Random={rand_rho:+.4f}"
+            )
+        else:
+            print(f"  Fold {fold_idx}: XGBRanker={xgb_rho:+.4f} | Linear={lin_rho:+.4f} | Random={rand_rho:+.4f}")
 
+    # Normalize xgb_folds to handle dict or float entries
+    _xgb_overall = [v["overall"] if isinstance(v, dict) else v for v in xgb_folds]
+    _xgb_hard = [v["hard"] if isinstance(v, dict) else float("nan") for v in xgb_folds]
+    _xgb_easy = [v["easy"] if isinstance(v, dict) else float("nan") for v in xgb_folds]
+    _hard_vals = [v for v in _xgb_hard if not np.isnan(v)]
+    _easy_vals = [v for v in _xgb_easy if not np.isnan(v)]
     print(
-        f"\n[5-Fold CV Mean] XGBRanker: {np.mean(xgb_folds):+.4f} (±{np.std(xgb_folds):.4f}) | "
+        f"\n[5-Fold CV Mean] XGBRanker: {np.mean(_xgb_overall):+.4f} (±{np.std(_xgb_overall):.4f}) | "
         f"Linear: {np.mean(lin_folds):+.4f} | Random: {np.mean(rand_folds):+.4f}"
     )
+    if _hard_vals:
+        print(f"  Hard Analytical Tie Mean Spearman: {np.mean(_hard_vals):+.4f}")
+    if _easy_vals:
+        print(f"  Easy Query Mean Spearman:          {np.mean(_easy_vals):+.4f}")
 
     # 2. Cross-Map Generalization Test
     cross_map_results = {}
@@ -149,7 +192,7 @@ def train_and_evaluate(
                 continue
             q_sizes_tr = df_tr.groupby("query_id", sort=False).size().values
             cm_ranker = build_xgb_ranker()
-            cm_ranker.fit(df_tr[feature_cols].values, df_tr["relevance"].values, group=q_sizes_tr)
+            cm_ranker.fit(df_tr[feature_cols].values, df_tr[_target_col].values, group=q_sizes_tr)
             cm_preds = cm_ranker.predict(df_te[feature_cols].values)
             cm_rho = compute_mean_query_spearman(df_te, cm_preds)
             cross_map_results[f"train_{train_map}_test_other"] = cm_rho
@@ -166,7 +209,7 @@ def train_and_evaluate(
             df_tr, df_te = df.iloc[tr_idx], df.iloc[te_idx]
             q_sizes_tr = df_tr.groupby("query_id", sort=False).size().values
             ab_ranker = build_xgb_ranker()
-            ab_ranker.fit(df_tr[keep_cols].values, df_tr["relevance"].values, group=q_sizes_tr)
+            ab_ranker.fit(df_tr[keep_cols].values, df_tr[_target_col].values, group=q_sizes_tr)
             ab_preds = ab_ranker.predict(df_te[keep_cols].values)
             fam_rhos.append(compute_mean_query_spearman(df_te, ab_preds))
         mean_ab = float(np.mean(fam_rhos))
@@ -197,6 +240,8 @@ def train_and_evaluate(
         "n_features": int(len(feature_cols)),
         "cv_xgb_folds": xgb_folds,
         "cv_xgb_mean": float(np.mean(xgb_folds)),
+        "cv_xgb_hard_mean": float(np.nanmean(xgb_hard_folds)) if xgb_hard_folds else float("nan"),
+        "cv_xgb_easy_mean": float(np.nanmean(xgb_easy_folds)) if xgb_easy_folds else float("nan"),
         "cv_linear_mean": float(np.mean(lin_folds)),
         "cv_random_mean": float(np.mean(rand_folds)),
         "cross_map_transfer": cross_map_results,
@@ -206,6 +251,73 @@ def train_and_evaluate(
     os.makedirs(os.path.dirname(summary_out), exist_ok=True)
     with open(summary_out, "w") as f:
         json.dump(summary, f, indent=2)
+    # Write results/oracle_training_report.md
+    md_lines = [
+        "# CL-ICBS-h Oracle Training & Cross-Validation Report",
+        "",
+        "> Generated automatically by `mapf/train_cl_ranker.py`",
+        "",
+        "---",
+        "",
+        "## 1. Executive Training Summary",
+        "",
+        f"| Metric | Value |",
+        f"|---|---|",
+        f"| Training Samples (Candidate Rows) | `{len(df):,}` |",
+        f"| Decision Queries | `{df['query_id'].nunique():,}` |",
+        f"| Features Used | `{len(feature_cols)}` |",
+        f"| 5-Fold CV XGBRanker (Overall Mean ρ) | `+{np.mean(xgb_folds):.4f} (±{np.std(xgb_folds):.4f})` |",
+        f"| 5-Fold CV LinearRanker (Ridge) | `+{np.mean(lin_folds):.4f}` |",
+        f"| 5-Fold CV RandomRanker (Control) | `+{np.mean(rand_folds):.4f}` |",
+        f"| Hard Analytical Tie Mean ρ (is_analytical_tie == 1) | `+{float(np.nanmean(xgb_hard_folds)):.4f}` |",
+        f"| Easy Query Mean ρ (is_analytical_tie == 0) | `+{float(np.nanmean(xgb_easy_folds)):.4f}` |",
+        "",
+        "---",
+        "",
+        "## 2. 5-Fold Cross-Validation Performance Breakdown",
+        "",
+        "| Fold | XGBRanker (Overall) | XGBRanker (Hard Ties) | XGBRanker (Easy) | Linear (Ridge) | Random (Control) |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for idx, (xr, hr, er, lr, rr) in enumerate(zip(xgb_folds, xgb_hard_folds, xgb_easy_folds, lin_folds, rand_folds), 1):
+        md_lines.append(f"| Fold {idx} | `+{xr:.4f}` | `+{hr:.4f}` | `+{er:.4f}` | `+{lr:.4f}` | `+{rr:.4f}` |")
+
+    md_lines += [
+        "",
+        "---",
+        "",
+        "## 3. Zero-Shot Cross-Map Generalization Transfer",
+        "",
+        "| Train Map Topology | Held-Out Test Topology | Spearman ρ |",
+        "|---|---|---:|",
+    ]
+    for k_cm, v_cm in cross_map_results.items():
+        tr_map = k_cm.replace("train_", "").replace("_test_other", "")
+        md_lines.append(f"| `{tr_map}` | Held-Out Maps | `+{v_cm:.4f}` |")
+
+    md_lines += [
+        "",
+        "---",
+        "",
+        "## 4. 7-Family Feature Ablation Study",
+        "",
+        "| Feature Family Removed | Excluded Features | 5-Fold CV Spearman ρ | Δ vs Full Model | Impact |",
+        "|---|---|---:|---:|---|",
+    ]
+    for fam_name, res in ablation_results.items():
+        if fam_name == "full_model":
+            md_lines.append(f"| **Full 24-Feature Model** | *(None)* | `+{res:.4f}` | `0.0000` | Reference Baseline |")
+        else:
+            delta_val = res["delta"]
+            sp_val = res["spearman"]
+            impact_str = "Critical Loss" if delta_val < -0.01 else ("Neutral / Redundant" if delta_val >= 0 else "Minor Signal")
+            md_lines.append(f"| `{fam_name}` | {FEATURE_FAMILIES.get(fam_name.replace('no_', ''), [])} | `+{sp_val:.4f}` | `{delta_val:+.4f}` | {impact_str} |")
+
+    md_path = "results/oracle_training_report.md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(md_lines) + "\n")
+    print(f"[Train CL-Ranker] Saved Markdown report to {md_path}.")
+
     print(f"\n[Train CL-Ranker] Saved final model to {model_out} and summary to {summary_out}.")
 
 

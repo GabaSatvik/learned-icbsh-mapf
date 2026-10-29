@@ -55,7 +55,7 @@ from mapf.conflicts import (
     Conflict, detect_all_conflicts, count_single_agent_conflicts
 )
 from mapf.cardinal import classify_conflicts, ClassifiedConflict
-from mapf.conflict_graph import ConflictGraph
+from mapf.conflict_graph import ConflictGraph, CardinalConflictGraph
 from mapf.features import FeatureExtractor, FEATURE_NAMES
 
 # ──────────────────────────────────────────────────────────────
@@ -295,59 +295,16 @@ def extract_features_for_candidate(
     extractor: FeatureExtractor,
     pair_history: Dict[Tuple[int, int], int],
 ) -> Dict[str, float]:
-    """
-    Extract all 21 inference-time features. Oracle quantities are NOT included here
-    (they're labels only). Adds 3 new features beyond the existing 18:
-      - delta_f_res: zero-A* residual lower-bound tightening (from alt_cost)
-      - is_head_on: 1 if EDGE conflict where agents swap positions
-      - mdd_width: approximate MDD width at conflict timestep
-    """
-    c = cc.conflict
-    ai, aj = c.agent_i, c.agent_j
-
-    # Downstream counts from alt_path analysis (already computed during classification)
-    n_total = len(all_classified)
-    down_i = max(0, n_total + cc.marginal_conflict_delta_i) if cc.alt_path_i else n_total
-    down_j = max(0, n_total + cc.marginal_conflict_delta_j) if cc.alt_path_j else n_total
-
-    base_feats = extractor.extract_features(
-        conflict=c,
-        conflict_class=cc.classification.lower().replace("_", "-"),
-        all_classified_conflicts=[
-            (x.conflict, x.classification.lower().replace("_", "-")) for x in all_classified
-        ],
-        paths=paths,
-        goals=goals,
-        mvc_size=mvc_size,
-        pair_history=pair_history,
-        downstream_counts=(down_i, down_j),
-    )
-
-    # New feature 1: delta_f_res — zero-A* analytical residual
-    # min(alt_cost_i - cost_i, alt_cost_j - cost_j) capped at 0 for non-cardinal
-    cost_i = get_path_cost(paths[ai])
-    cost_j = get_path_cost(paths[aj])
-    inc_i = (cc.alt_cost_i - cost_i) if cc.alt_path_i else float('inf')
-    inc_j = (cc.alt_cost_j - cost_j) if cc.alt_path_j else float('inf')
-    delta_f_res = min(inc_i, inc_j) if min(inc_i, inc_j) != float('inf') else 0.0
-    base_feats['delta_f_res'] = float(delta_f_res)
-
-    # New feature 2: is_head_on (EDGE conflict where agents swap)
-    is_head_on = 0.0
-    if c.conflict_type.upper() == "EDGE" and c.loc2 is not None:
-        # Head-on: agent_i goes from loc1 to loc2, agent_j goes from loc2 to loc1
-        # This is already what an edge conflict means — so all edge conflicts are head-on
-        is_head_on = 1.0
-    base_feats['is_head_on'] = is_head_on
-
-    # New feature 3: mdd_width_approx — BFS count of cells reachable in exactly t steps
-    # Approximation: use corridor score as proxy (true MDD requires separate BFS per agent)
-    # Full MDD is expensive; approximate with path-density heuristic
-    t = c.time
-    mdd_approx = float(min(t + 1, 5))  # crude approx; full MDD left for future work
-    base_feats['mdd_width_approx'] = mdd_approx
-
-    return base_feats
+    g_cf = CardinalConflictGraph(all_classified)
+    context = {
+        "paths": paths,
+        "goals": goals,
+        "G_CF": g_cf,
+        "mvc_size": mvc_size,
+        "pair_counts": pair_history,
+    }
+    feats = extractor.extract_all([cc], context)
+    return {fname: float(feats[0, f_idx]) for f_idx, fname in enumerate(FEATURE_NAMES)}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -492,14 +449,15 @@ def compute_all_labels(
     micro_budget: int = 30,
 ) -> Dict[str, float]:
     """
-    Computes all 8 ground-truth supervision signals for one candidate conflict.
-    Oracle quantities go here as LABELS only — not as features.
+    Computes all supervision signals for one candidate conflict.
+    Oracle quantities go here as LABELS only -- not as features.
+    Now also returns lex_tuple info for 2.1 Parameter-Free Lexicographic Ranking.
     """
     node_f = node_g + node_h
     c = cc.conflict
     ai, aj = c.agent_i, c.agent_j
 
-    # ── Label 1: Phase 1 proxy score (diagnostic reference) ──
+    # -- Label 1: Phase 1 proxy score (diagnostic reference) --
     is_card = 1.0 if cc.classification == "CARDINAL" else 0.0
     down_i = feat_dict.get('downstream_conflict_count_i', 0.0)
     down_j = feat_dict.get('downstream_conflict_count_j', 0.0)
@@ -507,21 +465,23 @@ def compute_all_labels(
     corr_j = feat_dict.get('corridor_score_j', 1.0)
     y_proxy = -(1.0 * is_card + 0.5 * (down_i + down_j) + 0.5 / (corr_i + corr_j + 1.0))
 
-    # ── Label 2: Zero-A* analytical residual (delta_f_res from features) ──
+    # -- Label 2: Zero-A* analytical residual (delta_f_res from features) --
     y_residual_df_min = feat_dict.get('delta_f_res', 0.0)
 
-    # ── Labels 3-5: Exact 1-step child oracle (Huang et al. AAAI 2021) ──
+    # -- Labels 3-5: Exact 1-step child oracle (Huang et al. AAAI 2021) --
     child_f_vals = []
     child_h_vals = []
     child_c_counts = []
+    child_new_ccs_list = []  # store new_ccs for each branch (for card_min computation)
 
     for b_idx, ag_id in enumerate([ai, aj]):
         new_path = cc.alt_path_i if b_idx == 0 else cc.alt_path_j
         if new_path is None:
-            # Infeasible branch — large penalty
+            # Infeasible branch -- large penalty
             child_f_vals.append(float(node_f + 15))
             child_h_vals.append(float(node_h + 3))
             child_c_counts.append(0)
+            child_new_ccs_list.append([])
             continue
 
         new_paths = list(paths)
@@ -541,6 +501,7 @@ def compute_all_labels(
         if not new_confs:
             child_f_vals.append(float(new_g))
             child_h_vals.append(0.0)
+            child_new_ccs_list.append([])
         else:
             # Acceleration 2: incremental classification
             new_ccs, _ = classify_conflicts_incremental(
@@ -550,6 +511,7 @@ def compute_all_labels(
             new_h = compute_mvc_from_classified(new_ccs)
             child_f_vals.append(float(new_g + new_h))
             child_h_vals.append(float(new_h))
+            child_new_ccs_list.append(new_ccs)
 
     f_min = min(child_f_vals) if child_f_vals else float(node_f + 15)
     f_max = max(child_f_vals) if child_f_vals else float(node_f + 15)
@@ -560,18 +522,35 @@ def compute_all_labels(
     df_max = f_max - node_f
     dh_min = h_min - node_h
 
-    # ── Label 6: In-place micro-rollout (Acceleration 5) ──
+    # -- 2.1 Upgrade: Count cardinal conflicts per branch, compute card_min --
+    branch_card_counts = []
+    for new_ccs in child_new_ccs_list:
+        n_card = sum(1 for x in new_ccs if x.classification == "CARDINAL")
+        branch_card_counts.append(n_card)
+    card_min = min(branch_card_counts) if branch_card_counts else 0
+
+    # -- Label 6: In-place micro-rollout (Acceleration 5) --
     y_micro = float(micro_rollout_from_children(
         memo, paths, per_agent_cs, conflicts, cc_map, classified, cc, node_f, micro_budget
     ))
 
-    # ── Label 7: Composite gold-standard ──
+    # -- Label 7: Composite gold-standard (kept as legacy) --
     y_composite = (
         25.0 * df_min
         + 6.0 * df_max
         + 4.0 * dh_min
         - 0.5 * y_micro
         - 0.15 * c_min
+    )
+
+    # -- 2.1 Upgrade: Parameter-free lexicographic ranking tuple --
+    lex_tuple = (
+        float(df_min),       # higher is better
+        float(df_max),       # higher is better
+        float(dh_min),       # higher is better (less MVC reduction = less urgency)
+        -float(y_micro),     # fewer rollout nodes is better (negate)
+        -float(c_min),       # fewer child conflicts is better (negate)
+        -float(card_min),    # fewer child cardinal conflicts is better (negate)
     )
 
     return {
@@ -583,7 +562,9 @@ def compute_all_labels(
         'y_child_conflicts': float(c_min),
         'y_micro_rollout': float(y_micro),
         'y_composite': float(y_composite),
-        # y_khalil_binary is assigned after all candidates in a query are scored
+        'y_lex_tuple': str(lex_tuple),        # serialized as string (column 2.1)
+        '_lex_tuple_raw': lex_tuple,           # internal use for ranking (not stored in CSV)
+        # y_khalil_binary and relevance assigned after all candidates in a query are scored
     }
 
 
@@ -623,7 +604,7 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
     for i in range(k):
         ht = compute_bfs_h_table(grid, goals[i])
         if starts[i] not in ht:
-            return []  # start unreachable from goal — skip instance
+            return []  # start unreachable from goal
         h_tables.append(ht)
 
     memo = AStarMemoizer(grid, starts, goals, h_tables)
@@ -639,13 +620,12 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
             return []
         root_paths.append(p)
 
-    # Build initial constraint sets (all empty at root)
     root_per_agent_cs = [ConstraintSet() for _ in range(k)]
     root_g = sum(get_path_cost(p) for p in root_paths)
     root_confs = detect_all_conflicts(root_paths)
 
     if not root_confs:
-        return []  # no conflicts — nothing to learn
+        return []
 
     root_ccs, root_map = classify_conflicts_incremental(
         memo, root_paths, root_per_agent_cs, root_confs,
@@ -653,7 +633,6 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
     )
     root_h = compute_mvc_from_classified(root_ccs)
 
-    # CT search state: (f, n_conflicts, tie_id, depth, g, h, paths, per_agent_cs, confs, ccs, cc_map, pair_history)
     tie_counter = [0]
 
     def make_state(g, h, paths, per_cs, confs, ccs, cmap, pair_hist, depth):
@@ -669,6 +648,9 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
     nodes_popped = 0
     rng = random.Random(seed + scen_id * 1000)
 
+    # 2.2 Upgrade: Conflict Signature Deduplication
+    seen_conflict_keys = set()
+
     while open_list and queries_harvested < max_queries and nodes_popped < MAX_NODES_PER_INSTANCE:
         if time.perf_counter() - t_start > 25.0:
             break
@@ -678,18 +660,16 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
         nodes_popped += 1
 
         if not confs:
-            break  # solved
+            break
 
-        # ICBS priority: Cardinal > Semi-Cardinal > Non-Cardinal
+        # Priority tiering: CARDINAL > SEMI_CARDINAL > NON_CARDINAL
         cardinals = [x for x in ccs if x.classification == "CARDINAL"]
         semis = [x for x in ccs if x.classification == "SEMI_CARDINAL"]
         nons = [x for x in ccs if x.classification == "NON_CARDINAL"]
         tier_name = "CARDINAL" if cardinals else ("SEMI_CARDINAL" if semis else "NON_CARDINAL")
         tier_cands = cardinals if cardinals else (semis if semis else nons)
 
-        # Only harvest queries with >= 2 candidates (otherwise no choice to learn)
         if len(tier_cands) >= 2:
-            # Cap to max_cands by priority: keep highest cost-increase candidates
             def cand_sort_key(cc):
                 return max(cc.cost_increase_i, cc.cost_increase_j)
             sorted_cands = sorted(tier_cands, key=cand_sort_key, reverse=True)
@@ -701,74 +681,112 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
             else:
                 sampled_cands = sorted_cands
 
-            # Compute labels and features for each sampled candidate
-            qid = f"{map_name}_k{k}_s{scen_id}_q{queries_harvested}"
-            t_q = time.perf_counter()
+            # 2.2 Deduplication Check: At least 50% must be novel
+            novel_count = sum(
+                1 for cc in sampled_cands
+                if (cc.conflict.agent_i, cc.conflict.agent_j, cc.conflict.time, cc.conflict.conflict_type, cc.conflict.loc1) not in seen_conflict_keys
+            )
+            is_novel_query = (queries_harvested == 0) or ((novel_count / len(sampled_cands)) >= 0.50)
 
-            cand_label_dicts = []
-            cand_feat_dicts = []
+            if is_novel_query:
+                # Add to seen_conflict_keys
+                for cc in sampled_cands:
+                    seen_conflict_keys.add((
+                        cc.conflict.agent_i, cc.conflict.agent_j, cc.conflict.time, cc.conflict.conflict_type, cc.conflict.loc1
+                    ))
 
-            for cc in sampled_cands:
-                pair_key = (min(cc.conflict.agent_i, cc.conflict.agent_j),
-                            max(cc.conflict.agent_i, cc.conflict.agent_j))
-                feat = extract_features_for_candidate(
-                    cc, ccs, paths, goals, h_val, extractor, pair_hist
-                )
-                cand_feat_dicts.append(feat)
-                labels = compute_all_labels(
-                    memo, paths, per_cs, confs, cc_map, ccs, cc,
-                    g_val, h_val, feat
-                )
-                cand_label_dicts.append(labels)
+                qid = f"{map_name}_k{k}_s{scen_id}_q{queries_harvested}"
+                t_q = time.perf_counter()
 
-            q_ms = (time.perf_counter() - t_q) * 1000.0
+                cand_label_dicts = []
+                cand_feat_dicts = []
 
-            # Assign y_khalil_binary: top 20% by y_composite gets label 1
-            comp_scores = np.array([d['y_composite'] for d in cand_label_dicts], dtype=float)
-            if len(comp_scores) > 1 and comp_scores.std() > 1e-9:
-                thresh = float(np.percentile(comp_scores, 80.0))
-                khalil_bin = (comp_scores >= thresh).astype(int).tolist()
-                # Normalize relevance to [0,2]
-                s_min, s_max = comp_scores.min(), comp_scores.max()
-                relevance = (2.0 * (comp_scores - s_min) / (s_max - s_min)).tolist()
-            else:
-                khalil_bin = [1] * len(sampled_cands)
-                relevance = [1.0] * len(sampled_cands)
+                for cc in sampled_cands:
+                    feat = extract_features_for_candidate(
+                        cc, ccs, paths, goals, h_val, extractor, pair_hist
+                    )
+                    cand_feat_dicts.append(feat)
+                    labels = compute_all_labels(
+                        memo, paths, per_cs, confs, cc_map, ccs, cc,
+                        g_val, h_val, feat
+                    )
+                    cand_label_dicts.append(labels)
 
-            for cand_idx, (cc, feat, labels) in enumerate(
-                zip(sampled_cands, cand_feat_dicts, cand_label_dicts)
-            ):
-                row = {
-                    'query_id': qid,
-                    'map_name': map_name,
-                    'k': int(k),
-                    'scenario_id': int(scen_id),
-                    'tree_depth': int(depth),
-                    'priority_tier': tier_name,
-                    'num_total_conflicts': int(len(confs)),
-                    'num_tier_conflicts': int(len(tier_cands)),
-                    'parent_g': int(g_val),
-                    'parent_h': int(h_val),
-                    'candidate_index': cand_idx,
-                    'query_labeling_ms': round(q_ms, 2),
-                    'relevance': round(float(relevance[cand_idx]), 4),
-                    'y_khalil_binary': int(khalil_bin[cand_idx]),
-                }
-                row.update(labels)
-                row.update(feat)
-                records.append(row)
+                q_ms = (time.perf_counter() - t_q) * 1000.0
+                M = len(sampled_cands)
 
-            queries_harvested += 1
+                # 2.1 Parameter-Free Lexicographic Ranking
+                lex_tuples = [d['_lex_tuple_raw'] for d in cand_label_dicts]
+                tuple_to_indices = {}
+                for idx, lt in enumerate(lex_tuples):
+                    tuple_to_indices.setdefault(lt, []).append(idx)
 
-        # Branch on best candidate (oracle-guided to explore diverse, realistic trajectories)
+                unique_tuples = sorted(tuple_to_indices.keys())
+                rank_pos = [0.0] * M
+                current_rank = 0.0
+                for ut in unique_tuples:
+                    idxs = tuple_to_indices[ut]
+                    avg_r = current_rank + (len(idxs) - 1) / 2.0
+                    for idx in idxs:
+                        rank_pos[idx] = avg_r
+                    current_rank += len(idxs)
+
+                denom = max(1.0, float(M - 1))
+                y_lex_rank_norm = [r / denom for r in rank_pos]
+                relevance = [2.0 * r for r in y_lex_rank_norm]
+
+                max_rank = max(y_lex_rank_norm) if y_lex_rank_norm else 1.0
+                khalil_bin = []
+                for r in y_lex_rank_norm:
+                    if M < 5:
+                        khalil_bin.append(1 if r == max_rank else 0)
+                    else:
+                        khalil_bin.append(1 if r >= 0.80 else 0)
+
+                # 2.3 Compute is_analytical_tie on Every Query
+                analytical_pairs = []
+                for idx, cc in enumerate(sampled_cands):
+                    df_res = cand_feat_dicts[idx].get('delta_f_res', 0.0)
+                    cost_i = get_path_cost(paths[cc.conflict.agent_i])
+                    cost_j = get_path_cost(paths[cc.conflict.agent_j])
+                    inc_i = (cc.alt_cost_i - cost_i) if cc.alt_path_i else 50.0
+                    inc_j = (cc.alt_cost_j - cost_j) if cc.alt_path_j else 50.0
+                    dg_min = min(inc_i, inc_j)
+                    analytical_pairs.append((df_res, dg_min))
+
+                best_pair = max(analytical_pairs) if analytical_pairs else (0.0, 0.0)
+                is_analytical_tie = 1 if sum(1 for p in analytical_pairs if p == best_pair) >= 2 else 0
+
+                for cand_idx, (cc, feat, labels) in enumerate(
+                    zip(sampled_cands, cand_feat_dicts, cand_label_dicts)
+                ):
+                    clean_labels = {k: v for k, v in labels.items() if k != '_lex_tuple_raw'}
+                    row = {
+                        'query_id': qid,
+                        'map_name': map_name,
+                        'k': int(k),
+                        'scenario_id': int(scen_id),
+                        'tree_depth': int(depth),
+                        'priority_tier': tier_name,
+                        'num_total_conflicts': int(len(confs)),
+                        'num_tier_conflicts': int(len(tier_cands)),
+                        'parent_g': int(g_val),
+                        'parent_h': int(h_val),
+                        'candidate_index': cand_idx,
+                        'query_labeling_ms': round(q_ms, 2),
+                        'is_analytical_tie': int(is_analytical_tie),
+                        'y_lex_rank_norm': round(float(y_lex_rank_norm[cand_idx]), 4),
+                        'relevance': round(float(relevance[cand_idx]), 4),
+                        'y_khalil_binary': int(khalil_bin[cand_idx]),
+                    }
+                    row.update(clean_labels)
+                    row.update(feat)
+                    records.append(row)
+
+                queries_harvested += 1
+
         if tier_cands:
-            # Use y_composite to pick the oracle-best candidate for CT expansion
-            # (This ensures we harvest data from deep, realistic search trajectories)
-            best_cc = tier_cands[0]  # First try: cardinal-first (safe default)
-            if len(records) > 0 and queries_harvested > 0:
-                # After first query, use oracle-guided branching
-                # Sort tier_cands by cost_increase to pick highest-leverage conflict
-                best_cc = max(tier_cands, key=lambda cc: max(cc.cost_increase_i, cc.cost_increase_j))
+            best_cc = max(tier_cands, key=lambda cc: max(cc.cost_increase_i, cc.cost_increase_j))
         else:
             break
 
@@ -792,12 +810,10 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
             new_paths[ag_id] = new_path
             new_g = g_val - get_path_cost(paths[ag_id]) + get_path_cost(new_path)
 
-            # Acceleration 3: O(k*T) incremental scan
             new_confs = detect_conflicts_for_agent(new_paths, ag_id, confs)
             if not new_confs:
-                continue  # Child is a solution — skip (we're harvesting data, not solving)
+                continue
 
-            # Acceleration 2: incremental classification
             new_ccs, new_map = classify_conflicts_incremental(
                 memo, new_paths, new_per_cs, new_confs,
                 parent_cc_map=cc_map, moved_agent=ag_id
@@ -813,11 +829,6 @@ def _harvest_instance(args) -> List[Dict[str, Any]]:
     return records
 
 
-# ──────────────────────────────────────────────────────────────
-# Main dataset builder with checkpointing
-# ──────────────────────────────────────────────────────────────
-
-# Extended feature names (21 total = 18 existing + 3 new)
 EXTENDED_FEATURE_NAMES = FEATURE_NAMES + ['delta_f_res', 'is_head_on', 'mdd_width_approx']
 
 LABEL_COLUMNS = [
@@ -827,25 +838,32 @@ LABEL_COLUMNS = [
 ]
 
 TRAINING_CONFIGS = [
-    # (map_name, map_path, scen_path, k_values, scen_range)
+    # 4 distinct map topologies:
     (
         "random-32-32-20",
         "data/random-32-32-20.map",
-        "data/scen-random/random-32-32-20-random-{}.scen",
+        "data/random-32-32-20-random-{}.scen",
         [16, 20, 24, 28],
         range(1, 21),
     ),
     (
         "room-32-32-4",
         "data/room-32-32-4.map",
-        "data/scen-random/room-32-32-4-random-{}.scen",
+        "data/room-32-32-4-random-{}.scen",
         [12, 16, 20, 24],
         range(1, 21),
     ),
     (
+        "warehouse-32-32-aisles",
+        "data/warehouse-32-32-aisles.map",
+        "data/warehouse-32-32-aisles-random-{}.scen",
+        [12, 16, 20, 24],
+        range(1, 16),
+    ),
+    (
         "Paris_1_256",
         "data/Paris_1_256.map",
-        "data/scen-random/Paris_1_256-random-{}.scen",
+        "data/Paris_1_256-random-{}.scen",
         [20, 30, 40],
         range(1, 11),
     ),
@@ -853,28 +871,17 @@ TRAINING_CONFIGS = [
 
 
 def build_dataset(
-    output_csv: str = "data/mapf_ct_dataset.csv",
+    output_csv: str = "data/mapf_ct_benchmark_dataset.csv",
+    secondary_csv: str = "data/cl_oracle_training.csv",
     max_queries_per_instance: int = 35,
     max_cands_per_query: int = 5,
     num_workers: Optional[int] = None,
     seed: int = 42,
     resume: bool = True,
 ):
-    """
-    Builds the MAPF-CT-Rank dataset with checkpointing and multiprocessing.
-
-    Args:
-        output_csv: Path to output CSV file.
-        max_queries_per_instance: Maximum labeling queries per (map, k, scenario).
-        max_cands_per_query: Maximum candidate conflicts to label per query node.
-        num_workers: Number of worker processes (defaults to cpu_count - 1).
-        seed: Random seed for reproducibility.
-        resume: If True and output_csv exists, skip already-processed instances.
-    """
     os.makedirs(os.path.dirname(output_csv) if os.path.dirname(output_csv) else '.', exist_ok=True)
     t0 = time.perf_counter()
 
-    # Build task list
     tasks = []
     for map_name, map_path, scen_tmpl, k_list, scen_range in TRAINING_CONFIGS:
         if not os.path.exists(map_path):
@@ -882,13 +889,17 @@ def build_dataset(
             continue
         for k in k_list:
             for s_id in scen_range:
+                # Try direct path then scen-random subdirectory
                 scen_path = scen_tmpl.format(s_id)
                 if not os.path.exists(scen_path):
-                    continue
+                    alt_path = scen_tmpl.replace("data/", "data/scen-random/").format(s_id)
+                    if os.path.exists(alt_path):
+                        scen_path = alt_path
+                    else:
+                        continue
                 tasks.append((map_name, map_path, scen_path, k, s_id,
                                max_queries_per_instance, max_cands_per_query, seed))
 
-    # Resume: filter tasks already done
     already_done = set()
     if resume and os.path.exists(output_csv):
         try:
@@ -904,11 +915,15 @@ def build_dataset(
 
     if not tasks:
         print("[Builder] All tasks already complete.")
+        # Ensure secondary_csv is also up to date
+        if os.path.exists(output_csv) and not os.path.exists(secondary_csv):
+            import shutil
+            shutil.copyfile(output_csv, secondary_csv)
         return output_csv
 
-    n_workers = num_workers or max(1, mp.cpu_count() - 1)
+    n_workers = num_workers or min(8, max(1, mp.cpu_count() - 1))
     print(f"[Builder] {len(tasks)} instances to process across {n_workers} workers")
-    print(f"[Builder] Output: {output_csv}")
+    print(f"[Builder] Target outputs: {output_csv} and {secondary_csv}")
 
     all_rows: List[Dict[str, Any]] = []
     if resume and os.path.exists(output_csv):
@@ -929,6 +944,8 @@ def build_dataset(
                 elapsed = time.perf_counter() - t0
                 df_ckpt = pd.DataFrame(all_rows)
                 df_ckpt.to_csv(output_csv, index=False)
+                if secondary_csv:
+                    df_ckpt.to_csv(secondary_csv, index=False)
                 n_q = df_ckpt['query_id'].nunique() if len(df_ckpt) > 0 else 0
                 rate = len(df_ckpt) / max(elapsed, 0.1)
                 print(f"  [Checkpoint {idx}/{len(tasks)}] "
@@ -938,16 +955,19 @@ def build_dataset(
     total = time.perf_counter() - t0
     final_df = pd.DataFrame(all_rows)
     final_df.to_csv(output_csv, index=False)
+    if secondary_csv:
+        final_df.to_csv(secondary_csv, index=False)
     print(f"\n[Builder] DONE in {total:.1f}s ({total/60:.2f} min)")
-    print(f"[Builder] Final: {len(final_df):,} rows, "
-          f"{final_df['query_id'].nunique() if len(final_df) > 0 else 0:,} queries -> {output_csv}")
+    print(f"[Builder] Saved {len(final_df):,} rows, "
+          f"{final_df['query_id'].nunique() if len(final_df) > 0 else 0:,} queries to {output_csv} and {secondary_csv}")
     return output_csv
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Build MAPF-CT-Rank dataset")
-    parser.add_argument("--output", default="data/mapf_ct_dataset.csv")
+    parser.add_argument("--output", default="data/mapf_ct_benchmark_dataset.csv")
+    parser.add_argument("--secondary", default="data/cl_oracle_training.csv")
     parser.add_argument("--queries", type=int, default=35)
     parser.add_argument("--cands", type=int, default=5)
     parser.add_argument("--workers", type=int, default=None)
@@ -956,6 +976,7 @@ if __name__ == "__main__":
 
     build_dataset(
         output_csv=args.output,
+        secondary_csv=args.secondary,
         max_queries_per_instance=args.queries,
         max_cands_per_query=args.cands,
         num_workers=args.workers,

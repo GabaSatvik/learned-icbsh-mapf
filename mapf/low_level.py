@@ -10,6 +10,19 @@ from typing import List, Tuple, Set, Optional, Dict, Union, Iterable
 from mapf.grid import GridMap
 from mapf.conflicts import Constraint
 
+# -- Module-level A* call counter (Task 1.1) --
+_ASTAR_CALL_COUNT: int = 0
+
+
+def reset_astar_call_count() -> None:
+    global _ASTAR_CALL_COUNT
+    _ASTAR_CALL_COUNT = 0
+
+
+def get_astar_call_count() -> int:
+    return _ASTAR_CALL_COUNT
+
+
 
 class ConstraintSet:
     def __init__(
@@ -115,6 +128,8 @@ def space_time_astar(
     """
     Finds optimal single-agent path from start to goal respecting vertex and edge constraints.
     """
+    global _ASTAR_CALL_COUNT
+    _ASTAR_CALL_COUNT += 1
     if not grid.is_passable(start[0], start[1]) or not grid.is_passable(goal[0], goal[1]):
         return None
 

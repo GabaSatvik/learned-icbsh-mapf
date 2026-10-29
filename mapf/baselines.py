@@ -103,9 +103,16 @@ def f_aware_residual_selector(
 
 class GuardedLearnedSelector:
     """
-    CL-ICBS-h Conflict Selector:
+    CL-ICBS-h Conflict Selector (Upgraded with Tie-Only Analytical Gating):
     Combines an analytical Top-K Residual f-Progress Guardrail with a learned
     24-feature surrogate ranker (XGBRanker or LinearRanker).
+    
+    Tie-Only Short-Circuit:
+    - If a single candidate strictly dominates on (delta_f_res, delta_g_min),
+      it is chosen immediately with ZERO feature extraction and ZERO ML inference overhead.
+    - ML inference is strictly invoked ONLY when multiple candidates tie on the maximum
+      (delta_f_res, delta_g_min) plateau.
+    - When model is a scikit-learn Pipeline (Ridge), uses raw vectorized NumPy dot product.
     """
 
     def __init__(self, model: Any, top_k_guardrail: int = 3, feature_mask: Optional[List[int]] = None):
@@ -113,6 +120,23 @@ class GuardedLearnedSelector:
         self.top_k_guardrail = top_k_guardrail
         self.feature_mask = feature_mask
         self._extractor_cache: Dict[int, FeatureExtractor] = {}
+        self.analytical_shortcircuits: int = 0
+        self.ml_tiebreaks: int = 0
+        
+        # Fast NumPy linear dot-product weights extraction
+        self._lin_mean: Optional[np.ndarray] = None
+        self._lin_scale: Optional[np.ndarray] = None
+        self._lin_coef: Optional[np.ndarray] = None
+        try:
+            if hasattr(model, 'steps'):
+                scaler = model.steps[0][1]
+                ridge = model.steps[-1][1]
+                if hasattr(scaler, 'mean_') and hasattr(ridge, 'coef_'):
+                    self._lin_mean = np.asarray(scaler.mean_, dtype=np.float64)
+                    self._lin_scale = np.asarray(scaler.scale_, dtype=np.float64)
+                    self._lin_coef = np.asarray(ridge.coef_, dtype=np.float64)
+        except Exception:
+            pass
 
     def _get_extractor(self, grid) -> FeatureExtractor:
         gid = id(grid)
@@ -126,46 +150,51 @@ class GuardedLearnedSelector:
         if len(candidates) == 1:
             return candidates[0]
 
-        scored = [
+        # 1. Compute zero-A* analytical lookahead tuple key for all candidates
+        # key: (delta_f_res, delta_g_min, delta_f_max, delta_g_max, deg_sum, pair_freq, -c.time)
+        keys = [_compute_candidate_lookahead_tuple(cc, context) for cc in candidates]
+
+        # 2. Find the best analytical pair (delta_f_res, delta_g_min)
+        best_df_dg = max((k[0], k[1]) for k in keys)
+
+        # 3. Filter to candidates that tie for this top analytical bound
+        tied_top = [cc for k, cc in zip(keys, candidates) if (k[0], k[1]) == best_df_dg]
+
+        # 4. Analytical Short-Circuit (Zero ML Overhead)
+        if len(tied_top) == 1:
+            self.analytical_shortcircuits += 1
+            return tied_top[0]
+
+        # 5. Learned Tie-Breaking on Analytical Plateaus (>= 2 candidates tied)
+        self.ml_tiebreaks += 1
+        
+        # Score tied candidates by structural hub metrics (deg_sum, pair_freq) for guardrail slicing
+        tied_scored = [
             (_compute_candidate_lookahead_tuple(cc, context), idx, cc)
-            for idx, cc in enumerate(candidates)
+            for idx, cc in enumerate(tied_top)
         ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        if self.top_k_guardrail is not None and len(candidates) > self.top_k_guardrail:
-            shortlist_scored = scored[: self.top_k_guardrail]
+        tied_scored.sort(key=lambda x: (x[0][4], x[0][5]), reverse=True)
+        if self.top_k_guardrail is not None and len(tied_top) > self.top_k_guardrail:
+            shortlist_scored = tied_scored[: self.top_k_guardrail]
         else:
-            shortlist_scored = scored
+            shortlist_scored = tied_scored
         shortlist = [item[2] for item in shortlist_scored]
 
         extractor = self._get_extractor(context["grid"])
+        if "goals" in context and not extractor.goals:
+            extractor.goals = context["goals"]
         X = extractor.extract_all(shortlist, context)
         if self.feature_mask is not None:
             X = X[:, self.feature_mask]
 
-        scores = np.asarray(self.model.predict(X), dtype=np.float64)
-        s_std = float(np.std(scores))
-        norm_scores = (scores - np.mean(scores)) / s_std if s_std > 1e-6 else np.zeros_like(scores)
+        # Fast NumPy Linear Path or Model Prediction
+        if self._lin_mean is not None and self._lin_scale is not None and self._lin_coef is not None:
+            X_f64 = np.asarray(X, dtype=np.float64)
+            scores = ((X_f64 - self._lin_mean) / self._lin_scale) @ self._lin_coef
+        else:
+            scores = np.asarray(self.model.predict(X), dtype=np.float64)
 
-        best_idx = 0
-        best_val = None
-        for idx, cc in enumerate(shortlist):
-            tup = shortlist_scored[idx][0]
-            delta_f_res, dg_min, df_max, dg_max, deg_sum, pair_freq, neg_t = tup
-            mc_min = min(cc.marginal_conflict_delta_i, cc.marginal_conflict_delta_j)
-            val = (
-                round(float(delta_f_res), 3),
-                round(float(dg_min), 3),
-                round(float(df_max), 3),
-                round(float(dg_max), 3),
-                int(deg_sum),
-                -int(min(mc_min, 50)),
-                round(float(norm_scores[idx]), 3),
-                int(pair_freq),
-                int(neg_t),
-            )
-            if best_val is None or val > best_val:
-                best_val = val
-                best_idx = idx
+        best_idx = int(np.argmax(scores))
         return shortlist[best_idx]
 
 

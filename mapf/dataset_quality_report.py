@@ -20,7 +20,8 @@ import pandas as pd
 from scipy.stats import spearmanr
 from typing import List, Tuple, Dict
 
-DATASET_CSV = "data/mapf_ct_dataset.csv"
+DATASET_CSV = "data/mapf_ct_benchmark_dataset.csv"
+DATASET_CSV_FALLBACK = "data/cl_oracle_training.csv"
 REPORT_PATH = "results/DATASET_CONTRIBUTION_REPORT.md"
 
 # Label column definitions (display name, column name, higher=better?)
@@ -33,6 +34,7 @@ LABEL_COLS = [
     ("Child Conflicts Min",              "y_child_conflicts",   False),
     ("Micro-Rollout Cost (B=30)",        "y_micro_rollout",     False),
     ("Hybrid Composite Oracle",          "y_composite",         True),
+    ("Parameter-Free Lexicographic Rank","y_lex_rank_norm",     True),
 ]
 
 
@@ -42,14 +44,20 @@ _QUERY_ARRAYS: Dict[str, List[np.ndarray]] = {}
 def init_query_cache(df: pd.DataFrame):
     global _QUERY_ARRAYS
     _QUERY_ARRAYS.clear()
-    valid_qids = df.groupby('query_id').filter(lambda g: len(g) >= 2)
-    # Group once and extract numpy arrays per column
-    for col in df.columns:
+    if len(df) == 0:
+        return
+    q_sizes = df.groupby('query_id', sort=False).size()
+    valid_q_set = set(q_sizes[q_sizes >= 2].index)
+    if not valid_q_set:
+        return
+    df_valid = df[df['query_id'].isin(valid_q_set)].sort_values('query_id').reset_index(drop=True)
+    q_ids = df_valid['query_id'].values
+    _, split_idx = np.unique(q_ids, return_index=True)
+    split_idx = split_idx[1:]
+    for col in df_valid.columns:
         if col != 'query_id':
-            try:
-                _QUERY_ARRAYS[col] = [grp[col].to_numpy() for _, grp in valid_qids.groupby('query_id')]
-            except Exception:
-                pass
+            vals = df_valid[col].to_numpy()
+            _QUERY_ARRAYS[col] = list(np.split(vals, split_idx))
 
 def compute_tie_rate(df: pd.DataFrame, col: str) -> Tuple[float, int]:
     """Returns (% tied queries, n_queries_evaluated)."""
@@ -59,10 +67,20 @@ def compute_tie_rate(df: pd.DataFrame, col: str) -> Tuple[float, int]:
     total = len(arrays)
     if total == 0:
         return 100.0, 0
-    tied = sum(1 for arr in arrays if len(np.unique(arr)) <= 1)
+    tied = sum(1 for arr in arrays if (np.max(arr) - np.min(arr)) < 1e-8)
     pct = (100.0 * tied / total)
     return pct, total
 
+def _fast_query_spearman(a: np.ndarray, b: np.ndarray) -> float:
+    if len(a) < 2 or (np.max(a) - np.min(a)) < 1e-8 or (np.max(b) - np.min(b)) < 1e-8:
+        return float('nan')
+    from scipy.stats import rankdata
+    ra = rankdata(a)
+    rb = rankdata(b)
+    ra_c = ra - np.mean(ra)
+    rb_c = rb - np.mean(rb)
+    denom = np.sqrt(np.sum(ra_c ** 2) * np.sum(rb_c ** 2))
+    return float(np.sum(ra_c * rb_c) / denom) if denom > 1e-9 else float('nan')
 
 def pairwise_query_spearman(df: pd.DataFrame, col_a: str, col_b: str) -> Tuple[float, int]:
     """Within-query Spearman ρ between two label columns. Returns (mean_rho, n_valid_queries)."""
@@ -72,10 +90,9 @@ def pairwise_query_spearman(df: pd.DataFrame, col_a: str, col_b: str) -> Tuple[f
     arrs_b = _QUERY_ARRAYS[col_b]
     rhos = []
     for a, b in zip(arrs_a, arrs_b):
-        if len(a) >= 2 and np.std(a) > 1e-8 and np.std(b) > 1e-8:
-            r, _ = spearmanr(a, b)
-            if not np.isnan(r):
-                rhos.append(float(r))
+        r = _fast_query_spearman(a, b)
+        if not np.isnan(r):
+            rhos.append(r)
     mean_rho = float(np.mean(rhos)) if rhos else float('nan')
     return mean_rho, len(rhos)
 
@@ -98,9 +115,15 @@ def generate_report(
 ) -> None:
     print(f"[Report] Loading dataset from {csv_path}...")
     if not os.path.exists(csv_path):
-        if os.path.exists("data/cl_oracle_training.csv"):
-            print(f"[Report] {csv_path} not found, using data/cl_oracle_training.csv instead.")
-            csv_path = "data/cl_oracle_training.csv"
+        # Fallback priority: data/mapf_ct_benchmark_dataset.csv -> data/cl_oracle_training.csv
+        _fallback1 = "data/mapf_ct_benchmark_dataset.csv"
+        _fallback2 = "data/cl_oracle_training.csv"
+        if csv_path != _fallback1 and os.path.exists(_fallback1):
+            print(f"[Report] {csv_path} not found, trying {_fallback1}...")
+            csv_path = _fallback1
+        elif os.path.exists(_fallback2):
+            print(f"[Report] {csv_path} not found, using {_fallback2} instead.")
+            csv_path = _fallback2
         else:
             print(f"[ERROR] Dataset not found: {csv_path}")
             print(f"  Run: python -m mapf.fast_dataset_builder first")
@@ -136,6 +159,16 @@ def generate_report(
 
     lines = []
 
+    # Compute hard analytical tie stats upfront
+    n_tie_queries = 0
+    n_easy_queries = 0
+    pct_hard = 0.0
+    if "is_analytical_tie" in df.columns:
+        tie_pq = df.groupby("query_id")["is_analytical_tie"].first()
+        n_tie_queries = int((tie_pq == 1).sum())
+        n_easy_queries = int((tie_pq == 0).sum())
+        pct_hard = 100.0 * n_tie_queries / max(n_queries, 1)
+
     # ── Header ──
     lines += [
         "# MAPF-CT-Rank: Multi-Fidelity Constraint Tree Conflict Prioritization Dataset",
@@ -152,6 +185,8 @@ def generate_report(
         f"| Total Decision Queries | `{n_queries:,}` |",
         f"| Mean Candidates per Query | `{mean_cands:.2f}` |",
         f"| Mean Labeling Time per Query | `{mean_ms:.2f} ms` |",
+        f"| Hard Analytical Ties (is_analytical_tie == 1) | `{n_tie_queries:,} ({pct_hard:.1f}%)` |",
+        f"| Analytically Solved Queries (is_analytical_tie == 0) | `{n_easy_queries:,} ({100.0 - pct_hard:.1f}%)` |",
         f"| Ground-Truth Label Columns | `{len(LABEL_COLS)}` |",
         "",
     ]
@@ -235,36 +270,100 @@ def generate_report(
     from mapf.fast_dataset_builder import EXTENDED_FEATURE_NAMES
     feature_cols = [f for f in EXTENDED_FEATURE_NAMES if f in df.columns]
 
-    if feature_cols and 'y_composite' in df.columns:
+    target_oracle = 'y_lex_rank_norm' if 'y_lex_rank_norm' in df.columns else 'y_composite'
+    if feature_cols and target_oracle in df.columns:
         lines += [
             "",
             "---",
             "",
-            "## 5. Feature-to-Oracle Rank Correlation (21 Inference-Time Features)",
+            f"## 5. Feature-to-Oracle Rank Correlation (24 Features vs `{target_oracle}`)",
             "",
-            "> Within-query Spearman ρ between each feature and the Hybrid Composite Oracle.",
-            "> Features with |ρ| > 0.2 are potentially useful for the learned ranker.",
+            "> Within-query Spearman ρ between each feature and the Oracle Target,",
+            "> reported both across **All Queries** and specifically on **Hard Analytical Tie Queries** (`is_analytical_tie == 1`).",
             "",
-            "| Rank | Feature | ρ with `y_composite` | Direction |",
-            "|---:|---|---:|---|",
+            f"| Rank | Feature | ρ (All Queries) | ρ (Hard Ties Only) | Direction |",
+            "|---:|---|---:|---:|---|",
         ]
 
-        feat_corrs = feature_to_oracle_spearman(df, feature_cols, 'y_composite')
-        for rank_i, (fname, rho) in enumerate(feat_corrs, 1):
-            if np.isnan(rho):
-                rho_str = "N/A"
-                direction = "—"
-            else:
-                rho_str = f"`{rho:+.4f}`"
-                direction = "↑ Higher = better branch" if rho >= 0 else "↓ Lower = better branch"
-            lines.append(f"| {rank_i} | `{fname}` | {rho_str} | {direction} |")
+        feat_corrs_all = feature_to_oracle_spearman(df, feature_cols, target_oracle)
+        
+        # Hard ties only
+        if "is_analytical_tie" in df.columns and (df["is_analytical_tie"] == 1).any():
+            df_hard = df[df["is_analytical_tie"] == 1].copy()
+            # Temporarily cache hard queries
+            init_query_cache(df_hard)
+            feat_corrs_hard = dict(feature_to_oracle_spearman(df_hard, feature_cols, target_oracle))
+            init_query_cache(df)  # restore cache
+        else:
+            feat_corrs_hard = {}
+
+        for rank_i, (fname, rho) in enumerate(feat_corrs_all, 1):
+            rho_str = f"`{rho:+.4f}`" if not np.isnan(rho) else "N/A"
+            rho_hard = feat_corrs_hard.get(fname, float('nan'))
+            rho_hard_str = f"`{rho_hard:+.4f}`" if not np.isnan(rho_hard) else "N/A"
+            direction = "↑ Higher = better branch" if (not np.isnan(rho) and rho >= 0) else ("↓ Lower = better branch" if not np.isnan(rho) else "—")
+            lines.append(f"| {rank_i} | `{fname}` | {rho_str} | {rho_hard_str} | {direction} |")
+
+    # ── Hard Analytical Tie Analysis (Section 6) ──
+    lines += [
+        "",
+        "---",
+        "",
+        "## 6. Hard Analytical Tie Query Analysis",
+        "",
+        "A Hard Analytical Tie query is one where >= 2 candidates share the identical maximum",
+        "(delta_f_res, delta_g_min) pair, so zero-A* analytical lookahead cannot discriminate.",
+        "These are exactly the queries where machine learning adds value beyond analytical rules.",
+        "",
+    ]
+
+    # Compute is_analytical_tie stats
+    _tie_col_found = False
+    if "is_analytical_tie" in df.columns:
+        _tie_col_found = True
+        _n_total = len(df["query_id"].unique())
+        # Use per-query first value
+        _tie_per_query = df.groupby("query_id")["is_analytical_tie"].first()
+        _n_tie = int((_tie_per_query == 1).sum())
+        _n_easy = int((_tie_per_query == 0).sum())
+        _pct = 100.0 * _n_tie / max(_n_total, 1)
+    elif "delta_f_res" in df.columns and "delta_g_min" in df.columns:
+        # Compute is_analytical_tie from raw columns
+        def _compute_is_tie(grp):
+            max_df = grp["delta_f_res"].max()
+            max_dg = grp["delta_g_min"].max()
+            top = grp[(grp["delta_f_res"] == max_df) & (grp["delta_g_min"] == max_dg)]
+            return 1 if len(top) >= 2 else 0
+        _tie_per_query = df.groupby("query_id").apply(_compute_is_tie)
+        _n_total = len(_tie_per_query)
+        _n_tie = int((_tie_per_query == 1).sum())
+        _n_easy = int((_tie_per_query == 0).sum())
+        _pct = 100.0 * _n_tie / max(_n_total, 1)
+        _tie_col_found = True
+
+    if _tie_col_found:
+        lines += [
+            "| Metric | Value |",
+            "|---|---|",
+            f"| Total Queries | `{_n_total:,}` |",
+            f"| Hard Analytical Tie Queries (is_analytical_tie == 1) | `{_n_tie:,}` |",
+            f"| Easy Queries (analytically resolved, is_analytical_tie == 0) | `{_n_easy:,}` |",
+            f"| % Hard Queries | `{_pct:.1f}%` |",
+            "",
+        ]
+    else:
+        lines += [
+            "> `is_analytical_tie` column not found and `delta_f_res`/`delta_g_min` not available.",
+            "> Run feature extraction with the full CL-ICBS-h feature set to populate this column.",
+            "",
+        ]
 
     # ── Proxy failure diagnosis ──
     lines += [
         "",
         "---",
         "",
-        "## 6. Proxy Failure Diagnosis",
+        "## 7. Proxy Failure Diagnosis",
         "",
     ]
 
@@ -288,7 +387,7 @@ def generate_report(
         "",
         "---",
         "",
-        "## 7. Methodology Notes",
+        "## 8. Methodology Notes",
         "",
         "### Label Definitions",
         "",
