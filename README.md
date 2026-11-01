@@ -54,6 +54,8 @@ This project investigates:
 │   ├── ranker_cl_oracle.json    # Trained XGBRanker model
 │   └── linear_cl_oracle.pkl     # Trained Linear Ridge model
 ├── results/
+│   ├── ONBOARDING_AND_PROJECT_PROGRESSION.md # New member onboarding & chronological progression guide
+│   ├── SUMMARY_OF_RESULTS.md    # Executive summary of empirical results
 │   ├── FINAL_REPORT.md          # Comprehensive final research report
 │   ├── PHASE3_FINAL_REPORT.md   # Phase 3 technical milestone report
 │   ├── DATASET_CONTRIBUTION_REPORT.md # Dataset quality audit report
