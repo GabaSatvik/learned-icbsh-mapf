@@ -4,6 +4,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import platform
+import subprocess
+import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -22,6 +26,10 @@ from rollout_oracle_experiment import (
 OUT = ROOT / "results" / "rollout_oracle" / "adaptive" / "new_states"
 PARTS = OUT / "raw_parts"
 BUDGETS = [50, 100, 250, 500, 1500]
+
+
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
 def harvest_ordinal(instance, ordinal):
@@ -137,6 +145,17 @@ def run(target_count, ordinal, timeout, workers):
         print(f"new-state {collected}/{target_count} {query_id} "
               f"solved={solved}/{len(pool)}", flush=True)
     summary = merge()
+    raw = pd.read_csv(OUT / "raw_rollouts.csv")
+    metadata = dict(
+        campaign="adaptive-new-states-v1", updated_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        git_commit=git("rev-parse", "HEAD"), branch=git("branch", "--show-current"),
+        dirty=bool(git("status", "--porcelain")), python=sys.version,
+        platform=platform.platform(), budgets=BUDGETS, wall_cap_seconds=timeout,
+        workers=workers, state_count=len(summary),
+        decision_ordinals=sorted({int(str(q).rsplit("q", 1)[1]) for q in raw.query_id}),
+        rollout_mode="full_search_state", continuation_policy="residual",
+        state_selection="q5/q10/q15/q20 from previously tractable train/development residual trajectories")
+    (OUT / "run_metadata.json").write_text(json.dumps(metadata, indent=2))
     print(f"merged new states={len(summary)}", flush=True)
 
 
