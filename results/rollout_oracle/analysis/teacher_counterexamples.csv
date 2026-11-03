@@ -1,0 +1,9 @@
+query_id,family_id,map,teacher_candidate,better_candidate,teacher_key_a,teacher_key_b,expansions_a,expansions_b,regret,plateau_escape_a,plateau_escape_b,final_lb_a,final_lb_b,graph_nodes,graph_edges,mvc
+room-32-32-4/family-10/k16/deep-q0,room-32-32-4/family-10,room-32-32-4,0-3-vertex-14-20-9,2-3-vertex-1-27-15,"[385.0, 386.0]","[385.0, 385.0]",23,15,8,1.0,1.0,386,386,3,2,1
+random-32-32-20/family-15/k24/deep-q0,random-32-32-20/family-15,random-32-32-20,12-14-vertex-30-3-20,13-14-edge-10-21-20-22-20,"[464.0, 488.0]","[464.0, 464.0]",87,80,7,1.0,1.0,467,467,7,5,3
+warehouse-32-32-aisles/family-11/k32/deep-q0,warehouse-32-32-aisles/family-11,warehouse-32-32-aisles,22-28-vertex-9-8-14,13-19-vertex-6-16-5,"[627.0, 632.0]","[625.0, 626.0]",161,156,5,1.0,2.0,632,632,9,5,4
+random-32-32-20/family-21/k24/deep-q0,random-32-32-20/family-21,random-32-32-20,1-16-vertex-24-4-7,3-14-vertex-14-16-7,"[510.0, 510.0]","[510.0, 510.0]",464,462,2,1.0,1.0,515,515,4,2,2
+random-32-32-20/family-16/k32/deep-q0,random-32-32-20/family-16,random-32-32-20,9-26-vertex-1-18-24,3-22-vertex-7-27-20,"[659.0, 659.0]","[658.0, 659.0]",447,446,1,1.0,2.0,662,662,6,3,3
+room-32-32-4/family-19/k16/deep-q0,room-32-32-4/family-19,room-32-32-4,7-11-edge-15-14-11-14-12,5-7-edge-20-14-17-14-16,"[421.0, 421.0]","[421.0, 421.0]",4,3,1,1.0,1.0,421,421,3,2,1
+warehouse-32-32-aisles/family-16/k24/deep-q0,warehouse-32-32-aisles/family-16,warehouse-32-32-aisles,4-7-vertex-38-21-5,6-17-vertex-25-8-23,"[548.0, 567.0]","[548.0, 561.0]",9,8,1,,,548,548,0,0,0
+warehouse-32-32-aisles/family-17/k32/deep-q0,warehouse-32-32-aisles/family-17,warehouse-32-32-aisles,2-19-vertex-30-15-22,2-7-edge-11-9-19-9-20,"[711.0, 723.0]","[711.0, 712.0]",33,32,1,33.0,32.0,712,712,0,0,0

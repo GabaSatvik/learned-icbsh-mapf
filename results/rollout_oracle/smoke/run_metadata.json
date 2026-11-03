@@ -1,0 +1,20 @@
+{
+  "run_id": "smoke-20261103-100432",
+  "git_commit": "ae4fa3571c5b5eb9d6378eebeb289831bb111543",
+  "branch": "research/deep-rollout-oracle",
+  "dirty": true,
+  "python": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "seed": 71,
+  "mode": "smoke",
+  "target_states": 5,
+  "collected_states": 5,
+  "budgets": [
+    50,
+    100,
+    250
+  ],
+  "continuation_policy": "residual",
+  "rollout_mode": "full_search_state",
+  "state_selection": "first informative live residual-policy decision per frozen train/development instance"
+}

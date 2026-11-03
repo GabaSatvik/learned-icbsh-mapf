@@ -1,0 +1,6 @@
+query_id,instance_id,family_id,split,map,agent_count,candidate_count,exact_candidates,all_candidates_exact,min_eventual_expansions,max_eventual_expansions,expansion_gap,expansion_ratio,optimal_costs,optimal_cost_preserved
+random-32-32-20/family-08/k16/deep-q0,random-32-32-20/family-08/k16,random-32-32-20/family-08,train,random-32-32-20,16,2,2,True,8,8,0,1.0,[380],True
+room-32-32-4/family-08/k24/deep-q0,room-32-32-4/family-08/k24,room-32-32-4/family-08,train,room-32-32-4,24,6,0,False,,,,,[],True
+warehouse-32-32-aisles/family-08/k32/deep-q0,warehouse-32-32-aisles/family-08/k32,warehouse-32-32-aisles/family-08,train,warehouse-32-32-aisles,32,2,2,True,102,107,5,1.0490196078431373,[639],True
+random-32-32-20/family-09/k24/deep-q0,random-32-32-20/family-09/k24,random-32-32-20/family-09,train,random-32-32-20,24,2,2,True,68,68,0,1.0,[563],True
+room-32-32-4/family-09/k32/deep-q0,room-32-32-4/family-09/k32,room-32-32-4/family-09,train,room-32-32-4,32,6,0,False,,,,,[],True

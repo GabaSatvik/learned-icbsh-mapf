@@ -1,0 +1,16 @@
+{
+  "states": 40,
+  "candidates": 176,
+  "fully_complete_states": 25,
+  "variable_complete_states": 19,
+  "optimal_cost_preserved": true,
+  "plateau_candidate_spearman": -0.24542144136591407,
+  "plateau_observed_candidates": 78,
+  "limitations": [
+    "15/40 states lack full candidate completion under the 1500-expansion/15-second cap.",
+    "Short-horizon perfect accuracy is a censoring-aware early-termination result, not a learned prediction among jointly unsolved candidates.",
+    "One early decision per family reduces adjacency correlation but emphasizes root/near-root behavior.",
+    "Only the three known maps and synthetic frozen train/development instances are covered."
+  ],
+  "decision": "PROMISING BUT NEED MORE ORACLE DATA"
+}
