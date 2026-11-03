@@ -1,241 +1,250 @@
 """
-Feature extraction module for Learning-to-Rank conflict prioritization in CBS/ICBS-h.
-Covers all six statement-named feature families:
-
-1. Corridor Structure:
-   Option (c) Distance-transform value was chosen.
-   - Justification / Rationale:
-     Option (c) directly measures the distance from the collision cell to the nearest obstacle.
-     Low values (e.g. 1) indicate tight bottlenecks/corridors with no lateral bypass routes,
-     whereas high values indicate open rooms where agents easily circumvent one another.
-     Alternative (a) [degree-3+ cells] only measures local graph branching without metric geometry.
-     Alternative (b) [alternative shortest path counts] is computationally expensive (O(V+E) per check).
-     Option (c) is O(1) at evaluation time (precomputed per map grid), highly interpretable, and clipped to [0, 5].
-
-2. Congestion:
-   - local_density_i, local_density_j: Number of other agents whose space-time trajectories
-     pass within Manhattan radius <= 2 of the conflict vertex at time t.
-
-3. Conflict Frequency:
-   - pair_conflict_count: Running count of conflicts previously detected and resolved between
-     agent i and agent j along this branch of the search tree.
-
-4. Goal Distance:
-   - goal_dist_i, goal_dist_j: True static shortest-path distance from conflict vertex to agent's goal.
-
-5. Number of Affected Agents:
-   - num_agents_in_conflict_graph: Total agents in V(G_CF).
-   - cardinal_degree_i, cardinal_degree_j: Degree of agent i and agent j in G_CF.
-
-6. Predicted Downstream Conflicts:
-   - downstream_conflict_count_i, downstream_conflict_count_j: One-step lookahead conflict count
-     in the re-planned paths found during cardinal classification.
-
-Kept Baseline Features:
-   - conflict_type: 2.0 (cardinal), 1.0 (semi-cardinal), 0.0 (non-cardinal)
-   - mvc_size: size of MVC(G_CF)
-   - conflict_time: timestep t
-   - is_edge_conflict: 1.0 if edge, 0.0 if vertex
-   - agent_i_path_length, agent_j_path_length
+24-Feature extraction module for Learning-to-Rank conflict prioritization in CL-ICBS-h.
+Covers all 6 statement-named feature families + baseline state context (18 features)
+plus 6 zero-A*-cost Cached-Lookahead features (24 total features).
 """
-from typing import List, Tuple, Dict, Set, Optional, Any
-from mapf.conflicts import Conflict, get_agent_pos_at_t
-from mapf.grid import Grid
-from mapf.low_level import manhattan_distance
 
+from collections import deque
+from typing import List, Tuple, Dict, Optional, Any
+import numpy as np
 
-def compute_grid_distance_transform(grid: Grid) -> Dict[Tuple[int, int], int]:
-    """
-    Computes distance transform from obstacles:
-    For every passable cell (x, y), returns the Manhattan distance to the nearest obstacle.
-    """
-    dt: Dict[Tuple[int, int], int] = {}
-    queue = []
-    
-    # Initialize from cells adjacent to obstacles or boundary
-    for y in range(grid.height):
-        for x in range(grid.width):
-            if (x, y) in grid.obstacles:
-                continue
-            # check distance to nearest obstacle
-            # For 0-distance, if next to obstacle or border
-            is_border = (x == 0 or x == grid.width - 1 or y == 0 or y == grid.height - 1)
-            has_adj_obs = any((nx, ny) in grid.obstacles for nx, ny in [
-                (x+1, y), (x-1, y), (x, y+1), (x, y-1)
-            ])
-            if is_border or has_adj_obs:
-                dt[(x, y)] = 1
-                queue.append((x, y))
+from mapf.grid import GridMap
+from mapf.low_level import get_location, get_path_cost, compute_bfs_h_table
+from mapf.conflicts import detect_all_conflicts, count_single_agent_conflicts, count_single_agent_conflicts
+from mapf.cardinal import ClassifiedConflict
+from mapf.conflict_graph import CardinalConflictGraph, compute_residual_mvc_size
 
-    head = 0
-    while head < len(queue):
-        curr = queue[head]
-        head += 1
-        d = dt[curr]
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = curr[0] + dx, curr[1] + dy
-            if grid.is_valid(nx, ny) and (nx, ny) not in dt:
-                dt[(nx, ny)] = d + 1
-                queue.append((nx, ny))
-
-    return dt
-
-
-def extract_conflict_features(
-    conflict: Conflict,
-    conflict_class: str,
-    all_classified_conflicts: List[Tuple[Conflict, str]],
-    paths: List[List[Tuple[int, int]]],
-    mvc_size: int
-) -> Dict[str, float]:
-    """Compatibility wrapper for extract_features."""
-    type_val = 2.0 if conflict_class == 'cardinal' else (1.0 if conflict_class == 'semi-cardinal' else 0.0)
-    cardinal_conflicts = [c for c, cls in all_classified_conflicts if cls == 'cardinal']
-    agents_cg = set()
-    for c in cardinal_conflicts:
-        agents_cg.add(c.agent_1)
-        agents_cg.add(c.agent_2)
-
-    a1, a2 = conflict.agent_1, conflict.agent_2
-    return {
-        'corridor_score_i': 1.0,
-        'corridor_score_j': 1.0,
-        'local_density_i': 0.0,
-        'local_density_j': 0.0,
-        'pair_conflict_count': 0.0,
-        'goal_dist_i': 0.0,
-        'goal_dist_j': 0.0,
-        'num_agents_in_conflict_graph': float(len(agents_cg)),
-        'cardinal_degree_i': 0.0,
-        'cardinal_degree_j': 0.0,
-        'downstream_conflict_count_i': 0.0,
-        'downstream_conflict_count_j': 0.0,
-        'conflict_type': type_val,
-        'mvc_size': float(mvc_size),
-        'conflict_time': float(conflict.time),
-        'is_edge_conflict': 1.0 if conflict.conflict_type == 'edge' else 0.0,
-        'agent_i_path_length': float(len(paths[a1])),
-        'agent_j_path_length': float(len(paths[a2]))
-    }
-
-
-FEATURE_NAMES = [
-    # Family 1: Corridor structure (option c)
-    'corridor_score_i',
-    'corridor_score_j',
-    # Family 2: Congestion
-    'local_density_i',
-    'local_density_j',
-    # Family 3: Conflict frequency
-    'pair_conflict_count',
-    # Family 4: Goal distance
-    'goal_dist_i',
-    'goal_dist_j',
-    # Family 5: Number of affected agents
-    'num_agents_in_conflict_graph',
-    'cardinal_degree_i',
-    'cardinal_degree_j',
-    # Family 6: Predicted downstream conflicts
-    'downstream_conflict_count_i',
-    'downstream_conflict_count_j',
-    # Kept baseline features
-    'conflict_type',
-    'mvc_size',
-    'conflict_time',
-    'is_edge_conflict',
-    'agent_i_path_length',
-    'agent_j_path_length'
+BASE_FEATURE_NAMES = [
+    # Family 1: Corridor structure (Option c: Distance-Transform Value to nearest obstacle, clipped [0, 5])
+    "corridor_score_i",
+    "corridor_score_j",
+    # Family 2: Congestion (Number of other agents within Manhattan radius <= 2 at timestep t)
+    "local_density_i",
+    "local_density_j",
+    # Family 3: Conflict frequency (Historical collision count for pair (i, j) along CT branch)
+    "pair_conflict_count",
+    # Family 4: Goal distance (Exact shortest-path distance from conflict cell to each agent's goal)
+    "goal_dist_i",
+    "goal_dist_j",
+    # Family 5: Affected agents (Vertices in G_CF and degrees of agent_i, agent_j in G_CF)
+    "num_agents_in_conflict_graph",
+    "cardinal_degree_i",
+    "cardinal_degree_j",
+    # Family 6: Downstream conflicts (Conflicts in 1-step lookahead)
+    "downstream_conflict_count_i",
+    "downstream_conflict_count_j",
+    # Baseline context features
+    "conflict_type",          # 2 = cardinal, 1 = semi-cardinal, 0 = non-cardinal
+    "mvc_size",               # Current node h(N) = MVC(G_CF)
+    "conflict_time",          # Timestep t of conflict
+    "is_edge_conflict",       # 1 if EDGE conflict, 0 if VERTEX conflict
+    "agent_i_path_length",    # Cost of agent_i current path
+    "agent_j_path_length",    # Cost of agent_j current path
 ]
+
+# Full 24-feature suite for CL-ICBS-h
+FEATURE_NAMES = BASE_FEATURE_NAMES + [
+    "delta_g_i",                  # Exact 1-step path cost increase for agent i
+    "delta_g_j",                  # Exact 1-step path cost increase for agent j
+    "delta_g_min",                # min(delta_g_i, delta_g_j)
+    "delta_g_max",                # max(delta_g_i, delta_g_j)
+    "delta_f_res",                # Guaranteed 1-step residual f-progress min(dg_i + dh_res_i, dg_j + dh_res_j)
+    "marginal_conflict_delta_min",# min(marginal_conflict_delta_i, marginal_conflict_delta_j)
+]
+
+EXTENDED_FEATURE_NAMES = FEATURE_NAMES
 
 
 class FeatureExtractor:
-    def __init__(self, grid: Grid):
+    def __init__(self, grid: GridMap, goals: Optional[List[Tuple[int, int]]] = None):
         self.grid = grid
-        self.dt = compute_grid_distance_transform(grid)
+        self.goals = goals or []
+        self.dist_transform = self._compute_obstacle_distance_transform()
+        self.goal_dist_tables: Dict[Tuple[int, int], Dict[Tuple[int, int], int]] = {}
+        for g in self.goals:
+            if g not in self.goal_dist_tables:
+                self.goal_dist_tables[g] = compute_bfs_h_table(self.grid, g)
 
-    def extract_features(
-        self,
-        conflict: Conflict,
-        conflict_class: str,
-        all_classified_conflicts: List[Tuple[Conflict, str]],
-        paths: List[List[Tuple[int, int]]],
-        goals: List[Tuple[int, int]],
-        mvc_size: int,
-        pair_history: Optional[Dict[Tuple[int, int], int]] = None,
-        downstream_counts: Optional[Tuple[int, int]] = None
-    ) -> Dict[str, float]:
-        a1, a2 = conflict.agent_1, conflict.agent_2
-        t = conflict.time
-        loc = conflict.loc_1
+    def _compute_obstacle_distance_transform(self) -> np.ndarray:
+        """
+        Option (c) Corridor Feature: Multi-source BFS from all obstacle cells and map borders.
+        Clipped to [0, 5]. Narrow 1-cell corridors get value 1; open areas get up to 5.
+        """
+        H, W = self.grid.height, self.grid.width
+        dist = np.full((H, W), 5, dtype=np.int32)
+        queue = deque()
 
-        # 1. Corridor structure (Option c: distance transform, clipped to [0, 5])
-        corridor_i = float(min(5, self.dt.get(loc, 1)))
-        corridor_j = corridor_i
+        for r in range(H):
+            for c in range(W):
+                if not self.grid.is_passable(r, c):
+                    dist[r, c] = 0
+                    queue.append((r, c))
+                elif r == 0 or r == H - 1 or c == 0 or c == W - 1:
+                    dist[r, c] = 1
+                    queue.append((r, c))
 
-        # 2. Congestion: other agents within Manhattan distance <= 2 at time t
-        num_agents = len(paths)
-        density_i = 0
-        density_j = 0
-        for a_idx in range(num_agents):
-            if a_idx == a1 or a_idx == a2:
+        while queue:
+            r, c = queue.popleft()
+            d = dist[r, c]
+            if d >= 5:
                 continue
-            pos = get_agent_pos_at_t(paths[a_idx], t)
-            if manhattan_distance(pos, loc) <= 2:
-                density_i += 1
-        density_j = density_i
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < H and 0 <= nc < W and dist[nr, nc] > d + 1:
+                    dist[nr, nc] = d + 1
+                    queue.append((nr, nc))
 
-        # 3. Conflict frequency
-        pair_key = (min(a1, a2), max(a1, a2))
-        pair_freq = float(pair_history.get(pair_key, 0) if pair_history else 0)
+        return np.clip(dist, 0, 5)
 
-        # 4. Goal distance
-        g_dist_i = float(manhattan_distance(loc, goals[a1])) if a1 < len(goals) else 0.0
-        g_dist_j = float(manhattan_distance(loc, goals[a2])) if a2 < len(goals) else 0.0
+    def _get_goal_dist(self, goal: Tuple[int, int], pos: Tuple[int, int]) -> int:
+        if goal not in self.goal_dist_tables:
+            self.goal_dist_tables[goal] = compute_bfs_h_table(self.grid, goal)
+        table = self.goal_dist_tables[goal]
+        return table.get(pos, abs(pos[0] - goal[0]) + abs(pos[1] - goal[1]))
 
-        # 5. Number of affected agents & degrees in G_CF
-        cardinal_edges = [
-            (c.agent_1, c.agent_2) for c, cls in all_classified_conflicts if cls == 'cardinal'
-        ]
-        agents_in_cg = set()
-        deg_i = 0
-        deg_j = 0
-        for u, v in cardinal_edges:
-            agents_in_cg.add(u)
-            agents_in_cg.add(v)
-            if u == a1 or v == a1:
-                deg_i += 1
-            if u == a2 or v == a2:
-                deg_j += 1
+    def extract_all(
+        self, classified: List[ClassifiedConflict], context: Dict[str, Any]
+    ) -> np.ndarray:
+        paths = context["paths"]
+        goals = context.get("goals", self.goals)
+        G_CF = context["G_CF"]
+        mvc_size = context.get("mvc_size", 0)
+        pair_counts = context.get("pair_counts", {})
+        return self.extract_conflict_features(
+            classified, paths, G_CF, mvc_size, pair_counts, goals=goals, include_extended=True
+        )
 
-        num_agents_cg = float(len(agents_in_cg))
-        cardinal_deg_i = float(deg_i)
-        cardinal_deg_j = float(deg_j)
+    def extract_conflict_features(
+        self,
+        classified: List[ClassifiedConflict],
+        paths: List[List[Tuple[int, int]]],
+        G_CF: CardinalConflictGraph,
+        mvc_size: int,
+        pair_counts: Dict[Tuple[int, int], int],
+        goals: Optional[List[Tuple[int, int]]] = None,
+        include_extended: bool = True,
+    ) -> np.ndarray:
+        active_goals = goals if goals is not None else self.goals
+        n_cols = len(FEATURE_NAMES) if include_extended else len(BASE_FEATURE_NAMES)
+        if not classified:
+            return np.zeros((0, n_cols), dtype=np.float32)
 
-        # 6. Downstream conflicts
-        down_i = float(downstream_counts[0]) if downstream_counts else 0.0
-        down_j = float(downstream_counts[1]) if downstream_counts else 0.0
+        k = len(paths)
+        num_cf_agents = G_CF.num_vertices()
+        rows = []
+        res_mvc_cache: Dict[int, int] = {}
 
-        # Kept features
-        type_val = 2.0 if conflict_class == 'cardinal' else (1.0 if conflict_class == 'semi-cardinal' else 0.0)
+        for cc in classified:
+            c = cc.conflict
+            i, j = c.agent_i, c.agent_j
+            t = c.time
+            pos_i = c.loc1
+            pos_j = c.loc2 if c.conflict_type.upper() == "EDGE" and c.loc2 is not None else c.loc1
 
-        feats = {
-            'corridor_score_i': corridor_i,
-            'corridor_score_j': corridor_j,
-            'local_density_i': float(density_i),
-            'local_density_j': float(density_j),
-            'pair_conflict_count': pair_freq,
-            'goal_dist_i': g_dist_i,
-            'goal_dist_j': g_dist_j,
-            'num_agents_in_conflict_graph': num_agents_cg,
-            'cardinal_degree_i': cardinal_deg_i,
-            'cardinal_degree_j': cardinal_deg_j,
-            'downstream_conflict_count_i': down_i,
-            'downstream_conflict_count_j': down_j,
-            'conflict_type': type_val,
-            'mvc_size': float(mvc_size),
-            'conflict_time': float(t),
-            'is_edge_conflict': 1.0 if conflict.conflict_type == 'edge' else 0.0,
-            'agent_i_path_length': float(len(paths[a1])),
-            'agent_j_path_length': float(len(paths[a2]))
-        }
-        return feats
+            # 1. Corridor structure
+            corridor_i = float(self.dist_transform[pos_i[0], pos_i[1]])
+            corridor_j = float(self.dist_transform[pos_j[0], pos_j[1]])
+
+            # 2. Congestion: other agents within Manhattan radius <= 2 at timestep t
+            density_i = 0
+            density_j = 0
+            for a in range(k):
+                if a == i or a == j:
+                    continue
+                pos_a = get_location(paths[a], t)
+                if abs(pos_a[0] - pos_i[0]) + abs(pos_a[1] - pos_i[1]) <= 2:
+                    density_i += 1
+                if abs(pos_a[0] - pos_j[0]) + abs(pos_a[1] - pos_j[1]) <= 2:
+                    density_j += 1
+
+            # 3. Conflict frequency
+            pair_key = (min(i, j), max(i, j))
+            pair_freq = float(pair_counts.get(pair_key, 0))
+
+            # 4. Goal distance
+            g_dist_i = float(self._get_goal_dist(active_goals[i], pos_i)) if i < len(active_goals) else 0.0
+            g_dist_j = float(self._get_goal_dist(active_goals[j], pos_j)) if j < len(active_goals) else 0.0
+
+            # 5. Affected agents
+            deg_i = float(G_CF.get_degree(i))
+            deg_j = float(G_CF.get_degree(j))
+
+            # 6. Downstream conflicts
+            if cc.alt_total_conflicts_i < 999999:
+                downstream_i = float(cc.alt_total_conflicts_i)
+            elif cc.alt_path_i is not None:
+                # O(k*T) single-agent scan instead of O(k^2*T) full detect_all_conflicts
+                _max_len = max(len(p) for p in paths)
+                downstream_i = float(count_single_agent_conflicts(paths, i, cc.alt_path_i, _max_len))
+            else:
+                downstream_i = 50.0
+
+            if cc.alt_total_conflicts_j < 999999:
+                downstream_j = float(cc.alt_total_conflicts_j)
+            elif cc.alt_path_j is not None:
+                # O(k*T) single-agent scan instead of O(k^2*T) full detect_all_conflicts
+                _max_len = max(len(p) for p in paths)
+                downstream_j = float(count_single_agent_conflicts(paths, j, cc.alt_path_j, _max_len))
+            else:
+                downstream_j = 50.0
+
+            if cc.classification == "CARDINAL":
+                ctype_val = 2.0
+            elif cc.classification == "SEMI_CARDINAL":
+                ctype_val = 1.0
+            else:
+                ctype_val = 0.0
+
+            is_edge = 1.0 if c.conflict_type.upper() == "EDGE" else 0.0
+            len_i = float(get_path_cost(paths[i]))
+            len_j = float(get_path_cost(paths[j]))
+
+            row = [
+                corridor_i,
+                corridor_j,
+                float(density_i),
+                float(density_j),
+                pair_freq,
+                g_dist_i,
+                g_dist_j,
+                float(num_cf_agents),
+                deg_i,
+                deg_j,
+                downstream_i,
+                downstream_j,
+                ctype_val,
+                float(mvc_size),
+                float(t),
+                is_edge,
+                len_i,
+                len_j,
+            ]
+
+            if include_extended:
+                old_cost_i = len(paths[i]) - 1
+                old_cost_j = len(paths[j]) - 1
+                dg_i = float(cc.alt_cost_i - old_cost_i) if cc.alt_path_i is not None else 50.0
+                dg_j = float(cc.alt_cost_j - old_cost_j) if cc.alt_path_j is not None else 50.0
+                dg_i = min(dg_i, 50.0)
+                dg_j = min(dg_j, 50.0)
+                dg_min = min(dg_i, dg_j)
+                dg_max = max(dg_i, dg_j)
+
+                if i not in res_mvc_cache:
+                    res_mvc_cache[i] = compute_residual_mvc_size(G_CF, i) if deg_i > 0 else mvc_size
+                if j not in res_mvc_cache:
+                    res_mvc_cache[j] = compute_residual_mvc_size(G_CF, j) if deg_j > 0 else mvc_size
+
+                df_i = dg_i + float(res_mvc_cache[i] - mvc_size)
+                df_j = dg_j + float(res_mvc_cache[j] - mvc_size)
+                delta_f_res = min(df_i, df_j)
+
+                mc_i = min(float(cc.marginal_conflict_delta_i), 25.0) if cc.marginal_conflict_delta_i < 999999 else 25.0
+                mc_j = min(float(cc.marginal_conflict_delta_j), 25.0) if cc.marginal_conflict_delta_j < 999999 else 25.0
+                mc_min = min(mc_i, mc_j)
+
+                row.extend([dg_i, dg_j, dg_min, dg_max, delta_f_res, mc_min])
+
+            rows.append(row)
+
+        return np.array(rows, dtype=np.float32)

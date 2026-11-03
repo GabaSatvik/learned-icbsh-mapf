@@ -28,14 +28,14 @@ def run_handbuilt_calibration() -> bool:
     for idx, (grid, starts, goals) in enumerate(test_cases, 1):
         cbs = StandardCBS(grid)
         icbs = ICBS_H(grid)
-        _, cbs_stats = cbs.solve(starts, goals, time_limit=5.0)
-        _, icbs_stats = icbs.solve(starts, goals, time_limit=5.0)
+        cbs_stats = cbs.solve(starts, goals, timeout=5.0)
+        icbs_stats = icbs.solve(starts, goals, timeout=5.0)
 
         cbs_cost = cbs_stats.get('cost')
         icbs_cost = icbs_stats.get('cost')
         match = (cbs_cost == icbs_cost and cbs_cost is not None)
-        print(f"  Test {idx}: CBS cost={cbs_cost} (nodes={cbs_stats.get('expanded')}) | "
-              f"ICBS-h cost={icbs_cost} (nodes={icbs_stats.get('expanded')}) -> Match={match}")
+        print(f"  Test {idx}: CBS cost={cbs_cost} (nodes={cbs_stats.get('nodes_expanded')}) | "
+              f"ICBS-h cost={icbs_cost} (nodes={icbs_stats.get('nodes_expanded')}) -> Match={match}")
         if not match:
             all_matched = False
     return all_matched
@@ -64,22 +64,22 @@ def run_benchmark_calibration() -> Tuple[float, float, int]:
 
         t0_cpu = time.process_time()
         t0_wall = time.time()
-        _, s_cbs = cbs.solve(starts, goals, time_limit=15.0)
+        s_cbs = cbs.solve(starts, goals, timeout=15.0)
         cbs_wall = time.time() - t0_wall
         cbs_cpu = time.process_time() - t0_cpu
         total_cbs_cpu += cbs_cpu
 
         t1_cpu = time.process_time()
         t1_wall = time.time()
-        _, s_icbs = icbs.solve(starts, goals, time_limit=15.0)
+        s_icbs = icbs.solve(starts, goals, timeout=15.0)
         icbs_wall = time.time() - t1_wall
         icbs_cpu = time.process_time() - t1_cpu
         total_icbs_cpu += icbs_cpu
-        total_nodes += s_icbs.get('expanded', 0)
+        total_nodes += s_icbs.get('nodes_expanded', 0) or 0
 
         print(f"  {os.path.basename(scen_file)} (k=20):")
-        print(f"    Plain CBS:  nodes={s_cbs.get('expanded')}, cost={s_cbs.get('cost')}, wall={cbs_wall:.3f}s, cpu={cbs_cpu:.3f}s")
-        print(f"    ICBS-h:     nodes={s_icbs.get('expanded')}, cost={s_icbs.get('cost')}, wall={icbs_wall:.3f}s, cpu={icbs_cpu:.3f}s")
+        print(f"    Plain CBS:  nodes={s_cbs.get('nodes_expanded')}, cost={s_cbs.get('cost')}, wall={cbs_wall:.3f}s, cpu={cbs_cpu:.3f}s")
+        print(f"    ICBS-h:     nodes={s_icbs.get('nodes_expanded')}, cost={s_icbs.get('cost')}, wall={icbs_wall:.3f}s, cpu={icbs_cpu:.3f}s")
 
     avg_icbs_cpu_per_instance = total_icbs_cpu / len(scenarios)
     avg_nodes_per_instance = max(total_nodes // len(scenarios), 1)

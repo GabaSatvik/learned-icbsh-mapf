@@ -1,224 +1,576 @@
 """
-ICBS-h implementation (Improved Conflict-Based Search with MVC Heuristic).
-Supports:
-  1. Conflict classification (cardinal, semi-cardinal, non-cardinal)
-  2. Bypassing conflicts
-  3. Conflict graph and Minimum Vertex Cover (MVC) admissible heuristic
-  4. Instrumenting conflict choices to the ConflictDataLogger for Learning-to-Rank.
+High-Level ICBS-h Solver (Boyarski et al., 2015 + Felner et al., 2018) with pluggable
+conflict-prioritization hooks, node classification caching, and strict priority-tier invariants.
 """
+
+from mapf.search_limits import bounded_solve
+from mapf.validation import validate_instance, validate_constrained_paths
 import heapq
 import time
-from typing import List, Tuple, Set, Optional, Dict, Any
-from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Any, Callable
+from mapf.grid import GridMap
+from mapf.low_level import (
+    ConstraintSet,
+    space_time_astar,
+    get_path_cost,
+    compute_bfs_h_table,
+    reset_astar_call_count,
+    get_astar_call_count,
+)
+from mapf.conflicts import Conflict, Constraint, detect_all_conflicts
+from mapf.cardinal import (
+    ClassifiedConflict,
+    classify_conflicts,
+    build_constraint_for_agent,
+    _extract_per_agent_constraint_sets,
+)
+from mapf.conflict_graph import CardinalConflictGraph, compute_h4_and_graph
 
-from mapf.grid import Grid
-from mapf.low_level import SpaceTimeAStar
-from mapf.conflicts import Conflict, find_all_conflicts
-from mapf.cardinal import classify_conflict, get_constraints_for_agent
-from mapf.conflict_graph import ConflictGraph
-from mapf.features import extract_conflict_features
-from mapf.logger import ConflictDataLogger
 
-
-@dataclass(order=True)
 class ICBSNode:
-    f_cost: int
-    h_cost: int
-    g_cost: int
-    id: int
-    paths: List[List[Tuple[int, int]]] = field(compare=False)
-    constraints: List[Tuple[int, str, Tuple]] = field(compare=False)
+    def __init__(
+        self,
+        constraints: List[ConstraintSet],
+        paths: List[List[Tuple[int, int]]],
+        g: int,
+        h: int,
+        depth: int = 0,
+        pair_counts: Optional[Dict[Tuple[int, int], int]] = None,
+        node_id: int = 0,
+        conflicts_cache: Optional[List[Conflict]] = None,
+        classified_cache: Optional[List[ClassifiedConflict]] = None,
+        g_cf_cache: Optional[CardinalConflictGraph] = None,
+        flat_constraints: Optional[List[Constraint]] = None,
+        bypass_steps: int = 0,
+    ):
+        self.constraints = constraints
+        self.paths = paths
+        self.g = g
+        self.h = h
+        self.f = g + h
+        self.depth = depth
+        self.pair_counts = dict(pair_counts) if pair_counts else {}
+        self.node_id = node_id
+        self.conflicts_cache = conflicts_cache
+        self.classified_cache = classified_cache
+        self.g_cf_cache = g_cf_cache
+        self.flat_constraints = list(flat_constraints) if flat_constraints else []
+        self.bypass_steps = bypass_steps
+
+    def __lt__(self, other: "ICBSNode"):
+        if self.f != other.f:
+            return self.f < other.f
+        if self.h != other.h:
+            return self.h < other.h
+        c_self = len(self.conflicts_cache) if self.conflicts_cache is not None else 999999
+        c_other = len(other.conflicts_cache) if other.conflicts_cache is not None else 999999
+        if c_self != c_other:
+            return c_self < c_other
+        return self.node_id < other.node_id
 
 
-class ICBS_H:
-    def __init__(self, grid: Grid, logger: Optional[ConflictDataLogger] = None, enable_bypass: bool = True):
+class ICBShSolver:
+    def __init__(
+        self,
+        grid: GridMap,
+        conflict_selector: Optional[
+            Callable[[List[ClassifiedConflict], Dict[str, Any]], ClassifiedConflict]
+        ] = None,
+        enable_bypass: bool = True,
+        regime: str = "A",
+        strict_tiering: bool = True,
+    ):
         self.grid = grid
-        self.low_level = SpaceTimeAStar(grid)
-        self.logger = logger
+        self.conflict_selector = conflict_selector
         self.enable_bypass = enable_bypass
+        self.regime = regime
+        self.strict_tiering = strict_tiering
 
-    def _compute_heuristic(self, classified_conflicts: List[Tuple[Conflict, str]]) -> int:
-        """Admissible heuristic = size of Minimum Vertex Cover of the cardinal conflict graph."""
-        cardinal_edges = [
-            (c.agent_1, c.agent_2)
-            for c, cls in classified_conflicts
-            if cls == 'cardinal'
-        ]
-        if not cardinal_edges:
-            return 0
-        cg = ConflictGraph(cardinal_edges)
-        return cg.compute_mvc()
-
+    @bounded_solve
     def solve(
         self,
         starts: List[Tuple[int, int]],
         goals: List[Tuple[int, int]],
-        time_limit: float = 30.0,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Optional[List[List[Tuple[int, int]]]], Dict]:
-        start_time = time.time()
-        num_agents = len(starts)
-        num_expanded = 0
-        node_id_counter = 0
+        timeout: float = 60.0,
+        max_expansions: Optional[int] = None,
+        initial_constraints: Optional[List[Any]] = None,
+        on_node_callback: Optional[
+            Callable[[ICBSNode, List[ClassifiedConflict], CardinalConflictGraph], None]
+        ] = None,
+        on_decision_callback: Optional[Callable[..., None]] = None,
+        shared_h_tables: Optional[List[Dict[Tuple[int, int], int]]] = None,
+        shared_path_cache: Optional[Dict[Tuple[int, Tuple[frozenset, frozenset]], Optional[List[Tuple[int, int]]]]] = None,
+        initial_node: Optional[ICBSNode] = None,
+        forced_first_conflict: Optional[Conflict] = None,
+        progress: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Solve, optionally continuing a saved descendant problem.
 
-        # Root node
-        root_paths = []
-        for i in range(num_agents):
-            p = self.low_level.find_path(starts[i], goals[i], set(), set())
-            if p is None:
-                return None, {'expanded': 0, 'time': time.time() - start_time, 'cost': None}
-            root_paths.append(p)
+        Continuation validates saved paths and their individual optimal costs,
+        rebuilds caches, and recomputes root MVC rather than trusting a supplied
+        inherited h. The original global OPEN frontier is not restored.
+        A forced first split suppresses bypass only at that root. Progress
+        exposes a lower bound on expansions even on cooperative interruption.
+        """
+        start_time = time.perf_counter()
+        if progress is not None:
+            progress.clear()
+            progress.update(nodes_expanded=0, forced_split_applied=False)
+        if initial_node is not None and initial_constraints is not None:
+            raise ValueError('Use saved-node constraints or initial_constraints, not both')
+        if forced_first_conflict is not None and initial_node is None:
+            raise ValueError('Forced continuation requires a saved node')
+        reset_astar_call_count()
+        if hasattr(self.conflict_selector, 'ml_tiebreaks'):
+            self.conflict_selector.ml_tiebreaks = 0
+        if hasattr(self.conflict_selector, 'analytical_shortcircuits'):
+            self.conflict_selector.analytical_shortcircuits = 0
+        k = len(starts)
+        if not validate_instance(self.grid, starts, goals):
+            return dict(status="UNSOLVABLE", cost=None, nodes_expanded=0,
+                        runtime=time.perf_counter()-start_time)
 
-        root_g = sum(len(p) - 1 for p in root_paths)
+        h_tables = shared_h_tables if shared_h_tables is not None else [compute_bfs_h_table(self.grid, goals[i]) for i in range(k)]
+        for i in range(k):
+            if starts[i] not in h_tables[i]:
+                return {
+                    "status": "NO_ROOT_PATH",
+                    "cost": None,
+                    "nodes_expanded": 0,
+                    "decision_nodes": 0,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
 
-        # Classify conflicts for root
-        initial_conflicts = find_all_conflicts(root_paths)
-        classified_initial = [
-            (c, classify_conflict(c, root_paths, starts, goals, [], self.low_level)[0])
-            for c in initial_conflicts
-        ]
-        root_h = self._compute_heuristic(classified_initial)
-        root = ICBSNode(
-            f_cost=root_g + root_h,
-            h_cost=root_h,
-            g_cost=root_g,
-            id=node_id_counter,
-            paths=root_paths,
-            constraints=[]
-        )
-        node_id_counter += 1
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
 
-        open_list = [root]
-
-        while open_list:
-            if time.time() - start_time > time_limit:
-                return None, {'expanded': num_expanded, 'time': time.time() - start_time, 'timeout': True}
-
-            curr = heapq.heappop(open_list)
-            num_expanded += 1
-
-            all_conflicts = find_all_conflicts(curr.paths)
-            if not all_conflicts:
-                return curr.paths, {
-                    'expanded': num_expanded,
-                    'time': time.time() - start_time,
-                    'cost': curr.g_cost
+                "runtime": time.perf_counter() - start_time,
                 }
 
-            # Classify all conflicts and check for bypass opportunities
-            classified_conflicts = []
-            bypass_found = False
+        max_t = None  # Exact low-level search uses a constraint-derived complete bound.
 
-            for c in all_conflicts:
-                c_class, bp1, bp2 = classify_conflict(
-                    c, curr.paths, starts, goals, curr.constraints, self.low_level
-                )
-                classified_conflicts.append((c, c_class))
+        path_cache = shared_path_cache if shared_path_cache is not None else {}
 
-                # Check bypass (if enabled, adopt alternative path without expanding CT)
-                if self.enable_bypass and not bypass_found:
-                    if bp1 is not None:
-                        new_paths = list(curr.paths)
-                        new_paths[c.agent_1] = bp1
-                        new_conflicts = find_all_conflicts(new_paths)
-                        if len(new_conflicts) < len(all_conflicts):
-                            curr.paths = new_paths
-                            bypass_found = True
+        root_constraints = ([cs.copy() for cs in initial_node.constraints] if initial_node is not None
+                            else _extract_per_agent_constraint_sets(k, initial_constraints))
+        if initial_node is not None:
+            validate_constrained_paths(self.grid, starts, goals, initial_node.paths, root_constraints)
+            if initial_node.g != sum(map(get_path_cost, initial_node.paths)):
+                raise ValueError('Saved node cost differs from path lengths')
+        root_flat_constraints: List[Constraint] = []
+        if initial_node is not None:
+            for agent, cs in enumerate(root_constraints):
+                root_flat_constraints.extend(Constraint(agent,t,(r,c)) for r,c,t in sorted(cs.vertex_constraints))
+                root_flat_constraints.extend(Constraint(agent,t,(r,c),(rr,cc),'EDGE')
+                                             for r,c,rr,cc,t in sorted(cs.edge_constraints))
+        if initial_constraints:
+            for item in initial_constraints:
+                if isinstance(item, Constraint):
+                    root_flat_constraints.append(item)
+
+        root_paths = []
+        for i in range(k):
+            p = space_time_astar(
+                self.grid,
+                starts[i],
+                goals[i],
+                root_constraints[i],
+                max_timesteps=max_t,
+                h_table=h_tables[i],
+            )
+            if p is None:
+                return {
+                    "status": "NO_ROOT_PATH",
+                    "cost": None,
+                    "nodes_expanded": 0,
+                    "decision_nodes": 0,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+                }
+            if initial_node is not None:
+                saved = initial_node.paths[i]
+                if len(saved) != len(p):
+                    raise ValueError('Saved individual path is not optimal under its constraints')
+                p = list(saved)
+            path_cache[(i, root_constraints[i].freeze_key())] = p
+            root_paths.append(p)
+
+        root_g = sum(get_path_cost(p) for p in root_paths)
+        root_conflicts = detect_all_conflicts(root_paths)
+        if not root_conflicts:
+            if forced_first_conflict is not None:
+                raise ValueError('No conflict to force in saved state')
+            if progress is not None:
+                progress['nodes_expanded'] = 1
+            return {
+                "status": "SOLVED",
+                "cost": root_g,
+                "paths": root_paths,
+                "nodes_expanded": 1,
+                "bypass_count": 0,
+                "decision_nodes": 0,
+                "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+            }
+
+        classified_root = classify_conflicts(
+            self.grid,
+            starts,
+            goals,
+            root_paths,
+            root_constraints,
+            root_conflicts,
+            enable_bypass=False,
+            max_timesteps=max_t,
+            h_tables=h_tables,
+            path_cache=path_cache,
+            return_bypass=False,
+        )
+        root_h, root_g_cf = compute_h4_and_graph(classified_root)
+
+        node_counter = 0
+        root = ICBSNode(
+            root_constraints,
+            root_paths,
+            root_g,
+            root_h,
+            depth=initial_node.depth if initial_node is not None else 0,
+            pair_counts=initial_node.pair_counts if initial_node is not None else None,
+            node_id=node_counter,
+            conflicts_cache=root_conflicts,
+            classified_cache=classified_root,
+            g_cf_cache=root_g_cf,
+            flat_constraints=root_flat_constraints,
+        )
+        open_list = [root]
+
+        nodes_expanded = 0
+        bypass_count = 0
+        decision_nodes = 0
+        forced_pending = forced_first_conflict
+
+        while open_list:
+            if time.perf_counter() - start_time > timeout:
+                return {
+                    "status": "TIMEOUT",
+                    "cost": None,
+                    "nodes_expanded": nodes_expanded,
+                    "bypass_count": bypass_count,
+                    "decision_nodes": decision_nodes,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+                }
+
+            if max_expansions is not None and nodes_expanded >= max_expansions:
+                return {
+                    "status": "MAX_EXPANSIONS",
+                    "cost": None,
+                    "nodes_expanded": nodes_expanded,
+                    "bypass_count": bypass_count,
+                    "decision_nodes": decision_nodes,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+                }
+
+            node = heapq.heappop(open_list)
+            nodes_expanded += 1
+            if progress is not None:
+                progress['nodes_expanded'] = nodes_expanded
+
+            conflicts = (
+                node.conflicts_cache
+                if node.conflicts_cache is not None
+                else detect_all_conflicts(node.paths)
+            )
+            if not conflicts:
+                return {
+                    "status": "SOLVED",
+                    "cost": node.g,
+                    "paths": node.paths,
+                    "nodes_expanded": nodes_expanded,
+                    "bypass_count": bypass_count,
+                    "decision_nodes": decision_nodes,
+                    "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+                }
+
+            can_bypass = self.enable_bypass and (node.bypass_steps < k * 3) and forced_pending is None
+            if node.classified_cache is not None and not can_bypass:
+                classified = node.classified_cache
+                bypass_info = None
+            elif node.classified_cache is not None and can_bypass:
+                # Check if cached classified conflicts already offer a valid bypass!
+                bypass_info = None
+                tot_before = len(conflicts)
+                for cc in node.classified_cache:
+                    if cc.classification != "CARDINAL":
+                        if (
+                            cc.cost_increase_i == 0
+                            and cc.alt_path_i is not None
+                            and cc.alt_total_conflicts_i < tot_before
+                        ):
+                            bypass_info = (cc.conflict.agent_i, cc.alt_path_i, cc.conflict)
                             break
-                    elif bp2 is not None:
-                        new_paths = list(curr.paths)
-                        new_paths[c.agent_2] = bp2
-                        new_conflicts = find_all_conflicts(new_paths)
-                        if len(new_conflicts) < len(all_conflicts):
-                            curr.paths = new_paths
-                            bypass_found = True
+                        if (
+                            cc.cost_increase_j == 0
+                            and cc.alt_path_j is not None
+                            and cc.alt_total_conflicts_j < tot_before
+                        ):
+                            bypass_info = (cc.conflict.agent_j, cc.alt_path_j, cc.conflict)
                             break
-
-            if bypass_found:
-                # Re-insert curr node into open list with updated paths
-                curr_h = self._compute_heuristic(
-                    [(c, classify_conflict(c, curr.paths, starts, goals, curr.constraints, self.low_level)[0])
-                     for c in find_all_conflicts(curr.paths)]
+                classified = node.classified_cache
+            else:
+                classified, bypass_info = classify_conflicts(
+                    self.grid,
+                    starts,
+                    goals,
+                    node.paths,
+                    node.constraints,
+                    conflicts,
+                    enable_bypass=can_bypass,
+                    max_timesteps=max_t,
+                    h_tables=h_tables,
+                    path_cache=path_cache,
+                    return_bypass=True,
                 )
-                curr.h_cost = curr_h
-                curr.f_cost = curr.g_cost + curr_h
-                heapq.heappush(open_list, curr)
+
+            if bypass_info is not None:
+                bp_agent, bp_path, _ = bypass_info
+                bypass_count += 1
+                new_paths = list(node.paths)
+                new_paths[bp_agent] = bp_path
+                new_conflicts = detect_all_conflicts(new_paths)
+                if not new_conflicts:
+                    return {
+                        "status": "SOLVED",
+                        "cost": node.g,
+                        "paths": new_paths,
+                        "nodes_expanded": nodes_expanded,
+                        "bypass_count": bypass_count,
+                        "decision_nodes": decision_nodes,
+                        "astar_calls": get_astar_call_count(),
+                "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+                "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+                "runtime": time.perf_counter() - start_time,
+                    }
+                new_classified = classify_conflicts(
+                    self.grid,
+                    starts,
+                    goals,
+                    new_paths,
+                    node.constraints,
+                    new_conflicts,
+                    enable_bypass=False,
+                    max_timesteps=max_t,
+                    h_tables=h_tables,
+                    path_cache=path_cache,
+                    return_bypass=False,
+                )
+                new_h, new_g_cf = compute_h4_and_graph(new_classified)
+                node_counter += 1
+                bp_node = ICBSNode(
+                    node.constraints,
+                    new_paths,
+                    node.g,
+                    max(node.h, new_h),
+                    depth=node.depth,
+                    pair_counts=node.pair_counts,
+                    node_id=node_counter,
+                    conflicts_cache=new_conflicts,
+                    classified_cache=new_classified,
+                    g_cf_cache=new_g_cf,
+                    flat_constraints=node.flat_constraints,
+                    bypass_steps=node.bypass_steps + 1,
+                )
+                heapq.heappush(open_list, bp_node)
                 continue
 
-            # Prioritize: Cardinal > Semi-Cardinal > Non-Cardinal
-            # Extract features for all candidate conflicts
-            current_mvc = self._compute_heuristic(classified_conflicts)
-            features_list = []
-            for c, c_cls in classified_conflicts:
-                feat = extract_conflict_features(
-                    c, c_cls, classified_conflicts, curr.paths, current_mvc
-                )
-                features_list.append(feat)
+            g_cf = (
+                node.g_cf_cache
+                if node.g_cf_cache is not None
+                else CardinalConflictGraph(classified)
+            )
 
-            # Standard ICBS preference: pick first cardinal, else semi, else non
-            priority_rank = {'cardinal': 0, 'semi-cardinal': 1, 'non-cardinal': 2}
-            best_idx = 0
-            best_rank = 999
-            for idx, (c, c_cls) in enumerate(classified_conflicts):
-                rank = priority_rank.get(c_cls, 3)
-                if rank < best_rank:
-                    best_rank = rank
-                    best_idx = idx
+            if on_node_callback is not None:
+                on_node_callback(node, classified, g_cf)
 
-            # Log this decision point if logger is active
-            if self.logger is not None and len(classified_conflicts) >= 1:
-                qid = self.logger.get_next_query_id()
-                self.logger.log_branch_decision(
-                    query_id=qid,
-                    candidate_features=features_list,
-                    chosen_index=best_idx,
-                    metadata=metadata
-                )
+            # Priority tiering: CARDINAL > SEMI_CARDINAL > NON_CARDINAL
+            cardinals = [cc for cc in classified if cc.classification == "CARDINAL"]
+            semis = [cc for cc in classified if cc.classification == "SEMI_CARDINAL"]
+            nons = [cc for cc in classified if cc.classification == "NON_CARDINAL"]
 
-            chosen_conflict = classified_conflicts[best_idx][0]
-
-            # Branch on chosen conflict
-            a1, a2 = chosen_conflict.agent_1, chosen_conflict.agent_2
-            if chosen_conflict.conflict_type == 'vertex':
-                c1 = (a1, 'vertex', (chosen_conflict.loc_1[0], chosen_conflict.loc_1[1], chosen_conflict.time))
-                c2 = (a2, 'vertex', (chosen_conflict.loc_1[0], chosen_conflict.loc_1[1], chosen_conflict.time))
+            if self.strict_tiering or self.regime == "A":
+                if cardinals:
+                    candidates = cardinals
+                elif semis:
+                    candidates = semis
+                else:
+                    candidates = nons
             else:
-                c1 = (a1, 'edge', (chosen_conflict.loc_1[0], chosen_conflict.loc_1[1], chosen_conflict.loc_2[0], chosen_conflict.loc_2[1], chosen_conflict.time))
-                c2 = (a2, 'edge', (chosen_conflict.loc_2[0], chosen_conflict.loc_2[1], chosen_conflict.loc_1[0], chosen_conflict.loc_1[1], chosen_conflict.time))
+                candidates = classified
 
-            for agent_constrained, new_constraint in [(a1, c1), (a2, c2)]:
-                child_constraints = list(curr.constraints) + [new_constraint]
-                v_cons, e_cons = get_constraints_for_agent(child_constraints, agent_constrained)
-
-                new_path = self.low_level.find_path(
-                    starts[agent_constrained],
-                    goals[agent_constrained],
-                    v_cons,
-                    e_cons
+            if on_decision_callback is not None and len(candidates) >= 2:
+                # The solver is paused before choosing or mutating this decision.
+                # Consumers must clone mutable members before running counterfactuals.
+                on_decision_callback(
+                    node,
+                    classified,
+                    g_cf,
+                    candidates,
+                    {
+                        "open_list": open_list,
+                        "node_counter": node_counter,
+                        "nodes_expanded": nodes_expanded,
+                        "bypass_count": bypass_count,
+                        "decision_nodes": decision_nodes,
+                        "h_tables": h_tables,
+                        "path_cache": path_cache,
+                        "starts": starts,
+                        "goals": goals,
+                    },
                 )
 
-                if new_path is not None:
-                    child_paths = list(curr.paths)
-                    child_paths[agent_constrained] = new_path
-                    child_g = sum(len(p) - 1 for p in child_paths)
+            if forced_pending is not None:
+                matches = [cc for cc in candidates if cc.conflict == forced_pending]
+                if len(matches) != 1:
+                    raise ValueError('Forced conflict is absent from the eligible priority tier')
+                chosen_cc = matches[0]
+                forced_pending = None
+                if progress is not None:
+                    progress['forced_split_applied'] = True
+                if len(candidates) >= 2:
+                    decision_nodes += 1
+            elif len(candidates) >= 2:
+                decision_nodes += 1
+                if self.conflict_selector is not None:
+                    context = {
+                        "grid": self.grid,
+                        "paths": node.paths,
+                        "starts": starts,
+                        "goals": goals,
+                        "G_CF": g_cf,
+                        "mvc_size": g_cf.exact_mvc_size(),
+                        "effective_h": node.h,
+                        "pair_counts": node.pair_counts,
+                        "classified": classified,
+                        "constraints": node.flat_constraints,
+                        "per_agent_constraints": node.constraints,
+                        "h_tables": h_tables,
+                    }
+                    chosen_cc = self.conflict_selector(candidates, context)
+                else:
+                    chosen_cc = candidates[0]
+            else:
+                chosen_cc = candidates[0]
 
-                    # Compute ICBS-h heuristic for child node
-                    child_conflicts = find_all_conflicts(child_paths)
-                    classified_child = [
-                        (cc, classify_conflict(cc, child_paths, starts, goals, child_constraints, self.low_level)[0])
-                        for cc in child_conflicts
-                    ]
-                    child_h = self._compute_heuristic(classified_child)
+            if not any(chosen_cc is cc for cc in candidates):
+                raise ValueError("Selector returned a conflict outside the eligible tier")
+            c = chosen_cc.conflict
+            ai, aj = c.agent_i, c.agent_j
+            pair_key = (min(ai, aj), max(ai, aj))
+            next_pair_counts = dict(node.pair_counts)
+            next_pair_counts[pair_key] = next_pair_counts.get(pair_key, 0) + 1
 
-                    child_node = ICBSNode(
-                        f_cost=child_g + child_h,
-                        h_cost=child_h,
-                        g_cost=child_g,
-                        id=node_id_counter,
-                        paths=child_paths,
-                        constraints=child_constraints
-                    )
-                    node_id_counter += 1
-                    heapq.heappush(open_list, child_node)
+            for branch_idx, agent_id in enumerate((ai, aj)):
+                other_agent = aj if agent_id == ai else ai
+                new_cs = build_constraint_for_agent(c, agent_id, node.constraints[agent_id])
+                new_con_obj = c.get_constraint_for_agent(agent_id, other_agent)
 
-        return None, {'expanded': num_expanded, 'time': time.time() - start_time, 'cost': None}
+                if branch_idx == 0 and chosen_cc.alt_path_i is not None:
+                    new_path = chosen_cc.alt_path_i
+                elif branch_idx == 1 and chosen_cc.alt_path_j is not None:
+                    new_path = chosen_cc.alt_path_j
+                else:
+                    ckey = (agent_id, new_cs.freeze_key())
+                    if ckey not in path_cache:
+                        path_cache[ckey] = space_time_astar(
+                            self.grid,
+                            starts[agent_id],
+                            goals[agent_id],
+                            new_cs,
+                            max_timesteps=max_t,
+                            h_table=h_tables[agent_id],
+                        )
+                    new_path = path_cache[ckey]
+
+                if new_path is None:
+                    continue
+
+                child_paths = list(node.paths)
+                child_paths[agent_id] = new_path
+                child_constraints = list(node.constraints)
+                child_constraints[agent_id] = new_cs
+                child_flat = list(node.flat_constraints) + [new_con_obj]
+                child_g = sum(get_path_cost(p) for p in child_paths)
+
+                child_conflicts = detect_all_conflicts(child_paths)
+                if not child_conflicts:
+                    child_classified = []
+                    child_h = 0
+                    child_g_cf = CardinalConflictGraph([])
+                else:
+                    # Paths are memoized, but contextual conflict counts must be
+                    # recomputed for this child, including untouched agent pairs.
+                    child_classified = classify_conflicts(
+                        self.grid, starts, goals, child_paths, child_constraints,
+                        child_conflicts, enable_bypass=False, h_tables=h_tables,
+                        path_cache=path_cache, return_bypass=False)
+                    child_h, child_g_cf = compute_h4_and_graph(child_classified)
+
+                # Pathmax: f(child) >= f(parent)
+                effective_h = max(child_h, node.f - child_g)
+                node_counter += 1
+                child_node = ICBSNode(
+                    child_constraints,
+                    child_paths,
+                    child_g,
+                    effective_h,
+                    depth=node.depth + 1,
+                    pair_counts=next_pair_counts,
+                    node_id=node_counter,
+                    conflicts_cache=child_conflicts,
+                    classified_cache=child_classified,
+                    g_cf_cache=child_g_cf,
+                    flat_constraints=child_flat,
+                    bypass_steps=0,
+                )
+                heapq.heappush(open_list, child_node)
+
+        return {
+            "status": "UNSOLVABLE",
+            "cost": None,
+            "nodes_expanded": nodes_expanded,
+            "bypass_count": bypass_count,
+            "decision_nodes": decision_nodes,
+            "astar_calls": get_astar_call_count(),
+            "ml_tiebreaks": getattr(self.conflict_selector, "ml_tiebreaks", 0),
+
+            "analytical_shortcircuits": getattr(self.conflict_selector, "analytical_shortcircuits", 0),
+
+            "runtime": time.perf_counter() - start_time,
+        }
+
+
+ICBSHSolver = ICBShSolver
+ICBS_H = ICBShSolver
