@@ -343,7 +343,12 @@ def fit_model():
             evaluations["validation"]["model_c"]["mean_regret"] <
             evaluations["validation"]["model_b"]["mean_regret"]),
     )
-    report = dict(metadata=metadata, evaluations=evaluations, development_gate=gate)
+    decision = (
+        "PROCEED_TO_SOLVER_DEVELOPMENT"
+        if all(gate.values())
+        else "STOP_MODEL_C_FAILED_DEVELOPMENT_GATE")
+    report = dict(metadata=metadata, evaluations=evaluations,
+                  development_gate=gate, decision=decision)
     (OUT / "model_c_metrics.json").write_text(json.dumps(report, indent=2))
     lines = [
         "# Model C — fixed Ridge with rollout labels", "",
@@ -358,7 +363,8 @@ def fit_model():
                          f"{metrics['worst_regret']} |")
     lines += ["", "## Development gate", ""]
     lines += [f"- {key}: **{value}**" for key, value in gate.items()]
-    lines += ["", "The fresh sealed test manifest was generated before fitting and was not solved or inspected."]
+    lines += ["", f"Decision: **{decision}**.", "",
+              "The fresh sealed test manifest was generated before fitting and was not solved or inspected."]
     (OUT / "MODEL_C_REPORT.md").write_text("\n".join(lines))
     print(json.dumps(report, indent=2))
 
