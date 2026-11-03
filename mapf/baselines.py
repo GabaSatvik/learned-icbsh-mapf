@@ -122,7 +122,7 @@ class GuardedLearnedSelector:
     CL-ICBS-h Conflict Selector (Upgraded with Tie-Only Analytical Gating):
     Combines an analytical Top-K Residual f-Progress Guardrail with a learned
     24-feature surrogate ranker (XGBRanker or LinearRanker).
-    
+
     Tie-Only Short-Circuit:
     - If a single candidate strictly dominates on (delta_f_res, delta_g_min),
       it is chosen immediately with ZERO feature extraction and ZERO ML inference overhead.
@@ -140,7 +140,7 @@ class GuardedLearnedSelector:
         self._extractor_cache: Dict[int, FeatureExtractor] = {}
         self.analytical_shortcircuits: int = 0
         self.ml_tiebreaks: int = 0
-        
+
         # Fast NumPy linear dot-product weights extraction
         self._lin_mean: Optional[np.ndarray] = None
         self._lin_scale: Optional[np.ndarray] = None
@@ -175,7 +175,7 @@ class GuardedLearnedSelector:
 
         # 5. Learned Tie-Breaking on Analytical Plateaus (>= 2 candidates tied)
         self.ml_tiebreaks += 1
-        
+
         extractor = self._get_extractor(context["grid"])
         if "goals" in context and not extractor.goals:
             extractor.goals = context["goals"]
@@ -642,5 +642,3 @@ class XGBRanker:
         self.trees_ = learner["gradient_booster"]["model"]["trees"]
         self._compile_trees()
         return self
-
-

@@ -33,8 +33,6 @@ def validate_solution(grid, starts, goals, paths, cost):
                    for i in range(len(paths)) for j in range(i+1, len(paths))):
                 raise ValueError('Edge swap')
     return True
-
-
 def validate_constrained_paths(grid, starts, goals, paths, constraints):
     """Check individual saved paths, including constraints after goal arrival.
 
@@ -58,5 +56,3 @@ def validate_constrained_paths(grid, starts, goals, paths, constraints):
             if t < 1 or (at(t-1),at(t)) == ((r,c),(rr,cc)):
                 raise ValueError('Saved path violates edge constraint')
     return True
-
-

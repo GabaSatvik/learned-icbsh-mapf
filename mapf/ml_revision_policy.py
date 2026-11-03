@@ -155,5 +155,3 @@ class RevisionSelector:
         if scores.shape != (len(pool),) or not np.isfinite(scores).all():
             raise ValueError('Invalid learned scores')
         return pool[int(np.argmax(scores))]
-
-

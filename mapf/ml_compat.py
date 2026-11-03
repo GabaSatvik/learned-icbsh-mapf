@@ -459,5 +459,3 @@ class XGBRanker:
         self.n_features_ = int(learner["learner_model_param"]["num_feature"])
         self.trees_ = learner["gradient_booster"]["model"]["trees"]
         return self
-
-

@@ -26,7 +26,7 @@
     "marginal_conflict_delta_min"
   ],
   "backend": "sklearn_ridge",
-  "model_sha256": "7bb5e0f8c86ebfb54d2349c8977e49b6ac1a28f60e94ba6e951b661293efaf62",
+  "model_sha256": "abb002baf15fd8e404cd545b5d67fbd2f4c527a2277d4603ad94b1fa56015d6c",
   "exploratory": true,
   "old_collection_gate_passed": false,
   "exploratory_fit_explicitly_approved": true,
@@ -289,4 +289,3 @@
   "validation_used_for_fit": false,
   "test_used": false
 }
-
