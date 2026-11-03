@@ -1,0 +1,71 @@
+{
+  "repeats": 30,
+  "sizes": [
+    4,
+    8,
+    12,
+    16,
+    19
+  ],
+  "seed": 20261103,
+  "train_families": 19,
+  "validation_families": 6,
+  "slope_accuracy_per_family": -0.006421117249846542,
+  "change_4_to_19": -0.11548148148148146,
+  "best_mean_family_count": 4,
+  "diagnosis": "NO_POSITIVE_LEARNING_CURVE_EVIDENCE",
+  "full_model_validation": {
+    "model_c": {
+      "queries": 14,
+      "informative_queries": 13,
+      "families": 6,
+      "pairwise_accuracy": 0.43846153846153846,
+      "family_macro_pairwise": 0.3844444444444445,
+      "top1_accuracy": 0.42857142857142855,
+      "mean_regret": 1.7857142857142858,
+      "median_regret": 1.5,
+      "family_macro_regret": 1.4111111111111112,
+      "zero_regret_fraction": 0.42857142857142855,
+      "worst_regret": 10
+    },
+    "model_b": {
+      "queries": 14,
+      "informative_queries": 13,
+      "families": 6,
+      "pairwise_accuracy": 0.6230769230769231,
+      "family_macro_pairwise": 0.6822222222222222,
+      "top1_accuracy": 0.5714285714285714,
+      "mean_regret": 0.8571428571428571,
+      "median_regret": 0.0,
+      "family_macro_regret": 0.6444444444444445,
+      "zero_regret_fraction": 0.5714285714285714,
+      "worst_regret": 3
+    },
+    "residual": {
+      "queries": 14,
+      "informative_queries": 13,
+      "families": 6,
+      "pairwise_accuracy": 0.6897435897435896,
+      "family_macro_pairwise": 0.7933333333333333,
+      "top1_accuracy": 0.7142857142857143,
+      "mean_regret": 0.6428571428571429,
+      "median_regret": 0.0,
+      "family_macro_regret": 0.41111111111111115,
+      "zero_regret_fraction": 0.7142857142857143,
+      "worst_regret": 3
+    },
+    "one_step": {
+      "queries": 14,
+      "informative_queries": 13,
+      "families": 6,
+      "pairwise_accuracy": 0.6256410256410256,
+      "family_macro_pairwise": 0.6355555555555557,
+      "top1_accuracy": 0.6428571428571429,
+      "mean_regret": 1.7142857142857142,
+      "median_regret": 0.0,
+      "family_macro_regret": 1.2444444444444445,
+      "zero_regret_fraction": 0.6428571428571429,
+      "worst_regret": 14
+    }
+  }
+}
