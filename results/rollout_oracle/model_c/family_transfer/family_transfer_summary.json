@@ -1,0 +1,88 @@
+{
+  "training_families": 19,
+  "development_families": 6,
+  "informative_training_families": 15,
+  "informative_development_families": 5,
+  "development_families_where_model_c_beats_residual": 0,
+  "model_c_development_family_accuracy": {
+    "random-32-32-20/family-20": 0.0,
+    "random-32-32-20/family-21": 0.4666666666666666,
+    "random-32-32-20/family-22": 0.5666666666666668,
+    "room-32-32-4/family-22": 0.38888888888888884,
+    "warehouse-32-32-aisles/family-21": null,
+    "warehouse-32-32-aisles/family-22": 0.5
+  },
+  "residual_development_family_accuracy": {
+    "random-32-32-20/family-20": 1.0,
+    "random-32-32-20/family-21": 0.5333333333333333,
+    "random-32-32-20/family-22": 0.5777777777777778,
+    "room-32-32-4/family-22": 0.8555555555555556,
+    "warehouse-32-32-aisles/family-21": null,
+    "warehouse-32-32-aisles/family-22": 1.0
+  },
+  "most_harmful_training_families": [
+    {
+      "family": "random-32-32-20/family-15",
+      "accuracy_gain_when_removed": 0.14000000000000004
+    },
+    {
+      "family": "random-32-32-20/family-10",
+      "accuracy_gain_when_removed": 0.13999999999999999
+    },
+    {
+      "family": "warehouse-32-32-aisles/family-13",
+      "accuracy_gain_when_removed": 0.1
+    },
+    {
+      "family": "warehouse-32-32-aisles/family-16",
+      "accuracy_gain_when_removed": 0.09555555555555557
+    },
+    {
+      "family": "random-32-32-20/family-09",
+      "accuracy_gain_when_removed": 0.09555555555555557
+    }
+  ],
+  "most_helpful_training_families": [
+    {
+      "family": "random-32-32-20/family-11",
+      "accuracy_loss_when_removed": 0.008888888888888901
+    },
+    {
+      "family": "random-32-32-20/family-12",
+      "accuracy_loss_when_removed": 0.006666666666666665
+    },
+    {
+      "family": "warehouse-32-32-aisles/family-11",
+      "accuracy_loss_when_removed": 0.004444444444444473
+    },
+    {
+      "family": "room-32-32-4/family-13",
+      "accuracy_loss_when_removed": 0.004444444444444473
+    },
+    {
+      "family": "room-32-32-4/family-16",
+      "accuracy_loss_when_removed": 0.004444444444444429
+    }
+  ],
+  "nearest_pair_consistency": {
+    "train_cross_family_nearest_pair_accuracy": 0.497571188071188,
+    "validation_nearest_train_pair_accuracy": 0.37777777777777777,
+    "validation_nearest_train_median_distance": 3.4955599455639734,
+    "train_families": 15,
+    "development_families": 5
+  },
+  "median_nearest_distance_when_label_agrees": 3.6424237064055176,
+  "median_nearest_distance_when_label_disagrees": 3.3679933742476713,
+  "most_family_dependent_features": [
+    "conflict_time",
+    "goal_dist_i",
+    "goal_dist_j",
+    "downstream_conflict_count_j",
+    "downstream_conflict_count_i",
+    "agent_j_path_length",
+    "marginal_conflict_delta_min",
+    "agent_i_path_length"
+  ],
+  "diagnosis": "FROZEN_FEATURE_CONTEXT_MISMATCH_LIKELY_SMALL_SAMPLE_LIMITS_CERTAINTY",
+  "sealed_test_used": false
+}
