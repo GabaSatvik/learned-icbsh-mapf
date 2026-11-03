@@ -1,0 +1,20 @@
+{
+  "total_states": 75,
+  "exact_states": 60,
+  "exact_candidates": 215,
+  "total_candidates": 302,
+  "candidate_completion": 0.7119205298013245,
+  "variable_exact_states": 49,
+  "families": 25,
+  "new_spaced_states": 35,
+  "hard_recovery_states": 3,
+  "hard_recovery_exact_states": 0,
+  "optimal_cost_preserved": true,
+  "plateau_spearman": 0.16223801034791768,
+  "gate": {
+    "exact_states_60": true,
+    "candidate_completion_70": true,
+    "no_optimality_mismatch": true
+  },
+  "recommendation": "PROCEED WITH ROLLOUT-BASED ML TRAINING"
+}

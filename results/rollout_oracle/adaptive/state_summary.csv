@@ -1,0 +1,4 @@
+query_id,instance_id,family_id,map,agent_count,candidate_count,exact_candidates,all_candidates_exact,min_eventual_expansions,max_eventual_expansions,expansion_gap,optimal_costs,optimal_cost_preserved
+room-32-32-4/family-08/k24/adaptive-q0,room-32-32-4/family-08/k24,room-32-32-4/family-08,room-32-32-4,24,6,0,False,,,,[],True
+room-32-32-4/family-09/k32/adaptive-q0,room-32-32-4/family-09/k32,room-32-32-4/family-09,room-32-32-4,32,6,0,False,,,,[],True
+room-32-32-4/family-11/k24/adaptive-q0,room-32-32-4/family-11/k24,room-32-32-4/family-11,room-32-32-4,24,6,0,False,,,,[],True

@@ -1,0 +1,28 @@
+{
+  "campaign": "adaptive-new-states-v1",
+  "updated_at": "2026-11-03T19:28:40",
+  "git_commit": "bca17bf1fc2a1e33ed5f22448006df9288f8184a",
+  "branch": "research/deep-rollout-oracle",
+  "dirty": true,
+  "python": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "budgets": [
+    50,
+    100,
+    250,
+    500,
+    1500
+  ],
+  "wall_cap_seconds": 20.0,
+  "workers": 4,
+  "state_count": 35,
+  "decision_ordinals": [
+    5,
+    10,
+    15,
+    20
+  ],
+  "rollout_mode": "full_search_state",
+  "continuation_policy": "residual",
+  "state_selection": "q5/q10/q15/q20 from previously tractable train/development residual trajectories"
+}

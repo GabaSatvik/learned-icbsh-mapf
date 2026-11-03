@@ -1,0 +1,21 @@
+{
+  "campaign": "adaptive-recovery-v1",
+  "created_at": "2026-11-03T19:17:16",
+  "git_commit": "afc1cf19c88c3f9b112ab529e4a3ebcb2d61ca93",
+  "branch": "research/deep-rollout-oracle",
+  "dirty": true,
+  "python": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "budgets": [
+    1500,
+    3000,
+    5000
+  ],
+  "wall_cap_seconds": 60.0,
+  "workers": 4,
+  "target_states": 3,
+  "completed_part_files": 3,
+  "rollout_mode": "full_search_state",
+  "continuation_policy": "residual",
+  "candidate_replay_required": true
+}
