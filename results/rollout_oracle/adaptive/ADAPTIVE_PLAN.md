@@ -17,6 +17,11 @@ Target the 15 pilot states in which no candidate completed under the original
 Stage A succeeds if it materially increases fully observed state sets without an
 optimal-cost mismatch. It does not retroactively replace the original raw pilot.
 
+Futility rule: stop Stage A after three complete state checkpoints if none of
+their candidates solves under the extended cap. This prevents spending the same
+maximum allowance on all 87 candidates when the intervention is not producing
+exact labels.
+
 ## Stage B — add distinct states
 
 Only after Stage A is analyzed:
